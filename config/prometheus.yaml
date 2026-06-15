@@ -1,0 +1,61 @@
+# Prometheus V8 Configuration
+store:
+  db_path: "data/prometheus_v8.db"
+  wal_mode: true
+  cache_size_mb: 64
+  fts_tokenizer: "unicode61"
+
+vector:
+  backend: "numpy"
+  dimension: 384
+  model_name: "all-MiniLM-L6-v2"
+  compression: "none"
+
+graph:
+  backend: "networkx"
+  community_algorithm: "leiden"
+
+evolution:
+  max_generations: 100
+  population_size: 20
+  mutation_rate: 0.3
+  crossover_rate: 0.7
+  direction: "auto"
+  enable_parallel: true
+  island_count: 4
+
+lifecycle:
+  consolidation_threshold: 100
+  dream_interval_hours: 6
+  decay_rate: 0.95
+  daily_learning_quota: 20
+  revision_interval: 5
+
+safety:
+  circuit_breaker_threshold: 5
+  circuit_breaker_timeout: 60
+  safe_harbor_threshold: 0.7
+  enable_plan_validation: true
+
+governance:
+  autonomy_level: 1
+  initiative_enabled: true
+  initiative_max_per_day: 3
+  initiative_max_steps: 15
+  curiosity_queue_size: 50
+
+trust:
+  default_level: "pending"
+  high_signal_sources: 2
+  verified_usage_count: 1
+  stale_days: 30
+  stale_utility_threshold: 2
+
+logging:
+  level: "INFO"
+  format: "json"
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8082
+  enable: true
