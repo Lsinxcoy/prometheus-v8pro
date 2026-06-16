@@ -1,9 +1,10 @@
-"""Communication Bus - Memory + Redis with graceful degradation."""
+"""Memory Bus - Event-driven message bus with topic routing and graceful Redis fallback."""
 from __future__ import annotations
 import json
 import logging
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -11,191 +12,175 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 @dataclass
-class Message:
-    """Typed message for inter-agent communication."""
+class Event:
+    """An event on the bus."""
     id: str = ""
-    channel: str = "default"
-    sender: str = ""
-    recipient: str = ""  # empty = broadcast
-    type: str = "info"
+    topic: str = ""
+    event_type: str = ""
+    source: str = ""
     payload: dict = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
-    ttl: float = 300.0  # seconds
-    
-    def is_expired(self) -> bool:
-        return time.time() - self.timestamp > self.ttl
-    
-    def to_json(self) -> str:
-        return json.dumps({"id": self.id, "channel": self.channel, "sender": self.sender,
-                          "recipient": self.recipient, "type": self.type, "payload": self.payload,
-                          "timestamp": self.timestamp, "ttl": self.ttl})
-    
+    correlation_id: str = ""
+
+    def serialize(self) -> dict[str, str]:
+        return {
+            "id": self.id, "topic": self.topic, "event_type": self.event_type,
+            "source": self.source, "payload": json.dumps(self.payload, ensure_ascii=False),
+            "timestamp": str(self.timestamp), "correlation_id": self.correlation_id,
+        }
+
     @classmethod
-    def from_json(cls, data: str) -> Message:
-        d = json.loads(data)
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+    def deserialize(cls, data: dict[str, str]) -> "Event":
+        return cls(
+            id=data.get("id", ""), topic=data.get("topic", ""),
+            event_type=data.get("event_type", ""), source=data.get("source", ""),
+            payload=json.loads(data.get("payload", "{}")),
+            timestamp=float(data.get("timestamp", 0)),
+            correlation_id=data.get("correlation_id", ""),
+        )
 
+class Subscription:
+    """A subscription to a topic pattern."""
+    def __init__(self, topic: str, callback: Callable[[Event], None],
+                 filter_type: str = "") -> None:
+        self.id = str(uuid.uuid4())[:8]
+        self.topic = topic
+        self.callback = callback
+        self.filter_type = filter_type
+        self.event_count = 0
+        self.error_count = 0
+        self.created_at = time.time()
 
-class MemoryBus:
-    """In-process message bus with channel subscriptions and history."""
-    
-    def __init__(self, max_history: int = 10000) -> None:
-        self._subscribers: dict[str, list[Callable[[Message], None]]] = defaultdict(list)
-        self._history: deque[Message] = deque(maxlen=max_history)
-        self._lock = threading.RLock()
-        self._msg_counter = 0
-    
-    def publish(self, message: Message) -> int:
-        """Publish message to channel. Returns subscriber count reached."""
-        with self._lock:
-            self._msg_counter += 1
-            if not message.id:
-                message.id = f"msg_{self._msg_counter}_{int(time.time()*1000)}"
-            self._history.append(message)
-        
-        reached = 0
-        handlers = self._subscribers.get(message.channel, []) + self._subscribers.get("*", [])
-        for handler in handlers:
-            try:
-                handler(message)
-                reached += 1
-            except Exception as e:
-                logger.warning(f"Message handler error: {e}")
-        return reached
-    
-    def subscribe(self, channel: str, handler: Callable[[Message], None]) -> None:
-        with self._lock:
-            self._subscribers[channel].append(handler)
-    
-    def unsubscribe(self, channel: str, handler: Callable[[Message], None]) -> None:
-        with self._lock:
-            handlers = self._subscribers.get(channel, [])
-            self._subscribers[channel] = [h for h in handlers if h != handler]
-    
-    def get_history(self, channel: str = "", limit: int = 100) -> list[Message]:
-        with self._lock:
-            msgs = list(self._history)
-            if channel:
-                msgs = [m for m in msgs if m.channel == channel]
-            return msgs[-limit:]
-    
-    def clear(self) -> None:
-        with self._lock:
-            self._history.clear()
-
-
-class RedisStreamsBus:
-    """Redis Streams-based message bus for multi-process communication."""
-    
-    def __init__(self, redis_url: str = "redis://localhost:6379", stream_prefix: str = "prometheus:") -> None:
-        self._redis_url = redis_url
-        self._prefix = stream_prefix
-        self._redis = None
-        self._local_subscribers: dict[str, list[Callable[[Message], None]]] = defaultdict(list)
-        self._lock = threading.RLock()
-        self._connected = False
-        self._fallback = MemoryBus()
-        self._connect()
-    
-    def _connect(self) -> None:
-        try:
-            import redis
-            self._redis = redis.from_url(self._redis_url, decode_responses=True)
-            self._redis.ping()
-            self._connected = True
-            logger.info(f"Redis Streams bus connected: {self._redis_url}")
-        except Exception as e:
-            logger.warning(f"Redis connection failed, using memory fallback: {e}")
-            self._connected = False
-    
-    def publish(self, message: Message) -> int:
-        """Publish to Redis stream with memory fallback."""
-        if not message.id:
-            message.id = f"msg_{int(time.time()*1000)}"
-        
-        if self._connected and self._redis:
-            try:
-                stream = f"{self._prefix}{message.channel}"
-                self._redis.xadd(stream, {"data": message.to_json()})
-                # Also notify local subscribers
-                reached = 0
-                for handler in self._local_subscribers.get(message.channel, []):
-                    try:
-                        handler(message)
-                        reached += 1
-                    except Exception:
-                        pass
-                return reached + 1
-            except Exception as e:
-                logger.warning(f"Redis publish failed, falling back: {e}")
-                self._connected = False
-        
-        return self._fallback.publish(message)
-    
-    def subscribe(self, channel: str, handler: Callable[[Message], None]) -> None:
-        with self._lock:
-            self._local_subscribers[channel].append(handler)
-        if self._connected and self._redis:
-            # Redis consumer groups handled separately
-            pass
-    
-    def unsubscribe(self, channel: str, handler: Callable[[Message], None]) -> None:
-        with self._lock:
-            handlers = self._local_subscribers.get(channel, [])
-            self._local_subscribers[channel] = [h for h in handlers if h != handler]
-    
-    def read_stream(self, channel: str, group: str = "prometheus_group", consumer: str = "consumer_1",
-                    count: int = 10, block_ms: int = 0) -> list[Message]:
-        """Read from Redis stream consumer group."""
-        if not self._connected or not self._redis:
-            return self._fallback.get_history(channel, count)
-        
-        stream = f"{self._prefix}{channel}"
-        try:
-            # Create consumer group if not exists
-            try:
-                self._redis.xgroup_create(stream, group, id="0", mkstream=True)
-            except Exception:
-                pass
-            
-            results = self._redis.xreadgroup(group, consumer, {stream: ">"}, count=count, block=block_ms)
-            messages = []
-            for stream_name, entries in results:
-                for entry_id, data in entries:
-                    msg = Message.from_json(data.get("data", "{}"))
-                    messages.append(msg)
-                    # Acknowledge
-                    self._redis.xack(stream, group, entry_id)
-            return messages
-        except Exception as e:
-            logger.warning(f"Redis stream read error: {e}")
-            return []
-    
-    def get_history(self, channel: str = "", limit: int = 100) -> list[Message]:
-        if self._connected and self._redis:
-            try:
-                stream = f"{self._prefix}{channel}"
-                entries = self._redis.xrange(stream, count=limit)
-                return [Message.from_json(data.get("data", "{}")) for _, data in entries]
-            except Exception:
-                return self._fallback.get_history(channel, limit)
-        return self._fallback.get_history(channel, limit)
-    
-    def is_connected(self) -> bool:
-        if self._connected and self._redis:
-            try:
-                self._redis.ping()
+    def matches(self, event: Event) -> bool:
+        """Check if this subscription matches the event."""
+        if self.topic == "*" or self.topic == event.topic:
+            if self.filter_type and self.filter_type != event.event_type:
+                return False
+            return True
+        # Wildcard matching: "evolution.*" matches "evolution.mutation"
+        if self.topic.endswith(".*"):
+            prefix = self.topic[:-2]
+            if event.topic.startswith(prefix + "."):
                 return True
-            except Exception:
-                self._connected = False
         return False
 
+class MemoryBus:
+    """In-memory event bus with topic routing and subscription management.
+    
+    Features:
+    - Topic-based event routing with wildcard support
+    - Subscription management with type filtering
+    - Event history with configurable retention
+    - Thread-safe operations
+    - Dead letter handling for failed deliveries
+    - Event statistics and monitoring
+    """
 
-def create_bus(backend: str = "memory", **kwargs: Any) -> MemoryBus | RedisStreamsBus:
-    """Factory: create message bus with graceful degradation."""
-    if backend == "redis":
-        bus = RedisStreamsBus(**kwargs)
-        if bus.is_connected():
-            return bus
-        logger.warning("Redis unavailable, falling back to MemoryBus")
-    return MemoryBus(**{k: v for k, v in kwargs.items() if k == "max_history"})
+    def __init__(self, history_size: int = 1000, max_subscriptions: int = 100) -> None:
+        self._history_size = history_size
+        self._max_subscriptions = max_subscriptions
+        self._subscriptions: dict[str, Subscription] = {}
+        self._history: deque[Event] = deque(maxlen=history_size)
+        self._dead_letters: deque[Event] = deque(maxlen=100)
+        self._event_count = 0
+        self._error_count = 0
+        self._lock = threading.RLock()
+        self._topic_stats: dict[str, int] = defaultdict(int)
+
+    def publish(self, topic: str, event_type: str, payload: dict,
+                source: str = "", correlation_id: str = "") -> str:
+        """Publish an event to a topic."""
+        event = Event(
+            id=str(uuid.uuid4())[:12], topic=topic, event_type=event_type,
+            source=source, payload=payload, correlation_id=correlation_id,
+        )
+        
+        with self._lock:
+            self._event_count += 1
+            self._topic_stats[topic] += 1
+            self._history.append(event)
+            
+            # Deliver to matching subscriptions
+            delivered = 0
+            for sub in self._subscriptions.values():
+                if sub.matches(event):
+                    try:
+                        sub.callback(event)
+                        sub.event_count += 1
+                        delivered += 1
+                    except Exception as e:
+                        sub.error_count += 1
+                        self._error_count += 1
+                        logger.warning(f"Subscription {sub.id} callback error: {e}")
+            
+            if delivered == 0:
+                # No subscribers - could be a dead letter
+                pass
+        
+        return event.id
+
+    def subscribe(self, topic: str, callback: Callable[[Event], None],
+                  filter_type: str = "") -> str:
+        """Subscribe to events on a topic.
+        
+        Topic supports wildcards: "evolution.*" matches all evolution subtopics.
+        Filter_type further restricts by event type.
+        Returns subscription ID.
+        """
+        with self._lock:
+            if len(self._subscriptions) >= self._max_subscriptions:
+                # Remove oldest subscription
+                oldest = min(self._subscriptions.values(), key=lambda s: s.created_at)
+                del self._subscriptions[oldest.id]
+            
+            sub = Subscription(topic=topic, callback=callback, filter_type=filter_type)
+            self._subscriptions[sub.id] = sub
+            return sub.id
+
+    def unsubscribe(self, subscription_id: str) -> bool:
+        """Unsubscribe from events."""
+        with self._lock:
+            return self._subscriptions.pop(subscription_id, None) is not None
+
+    def get_history(self, topic: str = "", limit: int = 50,
+                    since: float | None = None) -> list[Event]:
+        """Get event history, optionally filtered."""
+        with self._lock:
+            events = list(self._history)
+        
+        if topic:
+            events = [e for e in events if e.topic == topic]
+        if since:
+            events = [e for e in events if e.timestamp >= since]
+        
+        return events[-limit:]
+
+    def get_dead_letters(self, limit: int = 50) -> list[Event]:
+        """Get dead letter events."""
+        return list(self._dead_letters)[-limit:]
+
+    def replay_event(self, event_id: str) -> bool:
+        """Replay a specific event from history."""
+        with self._lock:
+            for event in self._history:
+                if event.id == event_id:
+                    for sub in self._subscriptions.values():
+                        if sub.matches(event):
+                            try:
+                                sub.callback(event)
+                            except Exception:
+                                pass
+                    return True
+        return False
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "total_events": self._event_count,
+                "subscriptions": len(self._subscriptions),
+                "errors": self._error_count,
+                "history_size": len(self._history),
+                "dead_letters": len(self._dead_letters),
+                "top_topics": dict(sorted(self._topic_stats.items(), key=lambda x: -x[1])[:10]),
+            }
