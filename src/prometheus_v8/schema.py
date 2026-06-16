@@ -2,19 +2,19 @@
 
 42+ NodeTypes, 40+ EdgeTypes, Provenance, Weibull, Trust, ActionHooks.
 """
-
 from __future__ import annotations
 
 import hashlib
 import struct
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
+from enum import Enum
 from typing import Any, Optional
 
-
 # ── Enums ──────────────────────────────────────────────────────
+
 
 class NodeType(str, Enum):
     EPISODE = "episode"
@@ -104,6 +104,134 @@ class EdgeType(str, Enum):
     SYNTHESIZED_FROM = "synthesized_from"
 
 
+# ── Dynamic Type Registries ────────────────────────────────────
+
+
+class NodeTypeRegistry:
+    """Dynamic registry for NodeType values beyond the static enum.
+
+    Allows runtime registration of new node types discovered via
+    ontology generation or other dynamic mechanisms. Registered types
+    are accessible via get() and can be used as NodeType-compatible strings.
+    """
+
+    _registry: dict[str, str] = {}  # name -> description
+    _lock = threading.Lock() if __import__("threading") else None
+
+    @classmethod
+    def register(cls, name: str, description: str = "") -> None:
+        """Register a new node type. Raises ValueError if name conflicts with static enum."""
+        # Check for conflict with static enum
+        for e in NodeType:
+            if e.value == name:
+                raise ValueError(f"Cannot register '{name}': conflicts with static NodeType enum value")
+
+        if cls._lock:
+            with cls._lock:
+                cls._registry[name] = description
+        else:
+            cls._registry[name] = description
+
+    @classmethod
+    def get(cls, name: str) -> str | None:
+        """Get a registered node type name, or None if not registered."""
+        # First check static enum
+        for e in NodeType:
+            if e.value == name:
+                return name
+        return cls._registry.get(name)
+
+    @classmethod
+    def is_registered(cls, name: str) -> bool:
+        """Check if a node type name is registered (static or dynamic)."""
+        for e in NodeType:
+            if e.value == name:
+                return True
+        return name in cls._registry
+
+    @classmethod
+    def all_types(cls) -> list[str]:
+        """List all type names (static enum + dynamic)."""
+        static = [e.value for e in NodeType]
+        dynamic = list(cls._registry.keys())
+        return static + dynamic
+
+    @classmethod
+    def dynamic_types(cls) -> dict[str, str]:
+        """Return only dynamically registered types as {name: description}."""
+        return dict(cls._registry)
+
+    @classmethod
+    def clear(cls) -> None:
+        """Clear all dynamically registered types."""
+        if cls._lock:
+            with cls._lock:
+                cls._registry.clear()
+        else:
+            cls._registry.clear()
+
+
+class EdgeTypeRegistry:
+    """Dynamic registry for EdgeType values beyond the static enum.
+
+    Allows runtime registration of new edge types discovered via
+    ontology generation or other dynamic mechanisms.
+    """
+
+    _registry: dict[str, str] = {}  # name -> description
+    _lock = threading.Lock() if __import__("threading") else None
+
+    @classmethod
+    def register(cls, name: str, description: str = "") -> None:
+        """Register a new edge type. Raises ValueError if name conflicts with static enum."""
+        for e in EdgeType:
+            if e.value == name:
+                raise ValueError(f"Cannot register '{name}': conflicts with static EdgeType enum value")
+
+        if cls._lock:
+            with cls._lock:
+                cls._registry[name] = description
+        else:
+            cls._registry[name] = description
+
+    @classmethod
+    def get(cls, name: str) -> str | None:
+        """Get a registered edge type name, or None if not registered."""
+        for e in EdgeType:
+            if e.value == name:
+                return name
+        return cls._registry.get(name)
+
+    @classmethod
+    def is_registered(cls, name: str) -> bool:
+        """Check if an edge type name is registered (static or dynamic)."""
+        for e in EdgeType:
+            if e.value == name:
+                return True
+        return name in cls._registry
+
+    @classmethod
+    def all_types(cls) -> list[str]:
+        """List all type names (static enum + dynamic)."""
+        static = [e.value for e in EdgeType]
+        dynamic = list(cls._registry.keys())
+        return static + dynamic
+
+    @classmethod
+    def dynamic_types(cls) -> dict[str, str]:
+        """Return only dynamically registered types as {name: description}."""
+        return dict(cls._registry)
+
+    @classmethod
+    def clear(cls) -> None:
+        """Clear all dynamically registered types."""
+        if cls._lock:
+            with cls._lock:
+                cls._registry.clear()
+        else:
+            cls._registry.clear()
+
+
 class MemoryLayer(str, Enum):
     WORKING = "working"
     EPISODIC = "episodic"
@@ -144,12 +272,14 @@ class Veracity(str, Enum):
 
 class TrustLevel(str, Enum):
     """Three-level trust from knowledge-conversion solution."""
-    PENDING = "pending"           # Single source, not yet verified
-    HIGH_SIGNAL = "high_signal"   # 2+ independent cross-validated sources
-    VERIFIED = "verified"         # Actually used and proven effective
+
+    PENDING = "pending"  # Single source, not yet verified
+    HIGH_SIGNAL = "high_signal"  # 2+ independent cross-validated sources
+    VERIFIED = "verified"  # Actually used and proven effective
 
 
 # ── Helper Functions ───────────────────────────────────────────
+
 
 def generate_uuidv7() -> bytes:
     """Generate UUIDv7 (time-ordered) as 16 bytes."""
@@ -157,10 +287,10 @@ def generate_uuidv7() -> bytes:
     # UUIDv7: 48-bit timestamp + 4-bit version + 12-bit random + 2-bit variant + 62-bit random
     rand_bits = uuid.uuid4().int
     uuid_int = (ts_ms & 0xFFFFFFFFFFFF) << 80  # 48-bit timestamp in top bits
-    uuid_int |= (0x7 << 76)                      # version 7
-    uuid_int |= (0x2 << 62)                       # variant 10
-    uuid_int |= rand_bits & 0x3FFFFFFFFFFFFFFF    # 62 random bits
-    uuid_int &= (1 << 128) - 1                    # Clamp to 128 bits
+    uuid_int |= 0x7 << 76  # version 7
+    uuid_int |= 0x2 << 62  # variant 10
+    uuid_int |= rand_bits & 0x3FFFFFFFFFFFFFFF  # 62 random bits
+    uuid_int &= (1 << 128) - 1  # Clamp to 128 bits
     return uuid_int.to_bytes(16, "big")
 
 
@@ -171,17 +301,19 @@ def compute_checksum(data: str | bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-def compute_weibull_retention(age_days: float, importance: float, lam: float, k: float,
-                               consecutive_hits: int = 0) -> float:
+def compute_weibull_retention(
+    age_days: float, importance: float, lam: float, k: float, consecutive_hits: int = 0
+) -> float:
     """Compute Weibull retention score.
 
     retention = importance * exp(-(age/λ)^k) * (1 + 0.1 * consecutive_hits)
     """
     import math
+
     if age_days <= 0:
         return min(1.0, importance * (1 + 0.1 * consecutive_hits))
     retention = importance * math.exp(-((age_days / lam) ** k))
-    retention *= (1 + 0.1 * consecutive_hits)
+    retention *= 1 + 0.1 * consecutive_hits
     return min(1.0, retention)
 
 
@@ -198,11 +330,13 @@ WEIBULL_DEFAULTS: dict[MemoryLayer, tuple[float, float]] = {
 
 # ── Data Classes ──────────────────────────────────────────────
 
+
 @dataclass
 class WeibullParams:
     """Weibull forgetting curve parameters per memory layer."""
-    lam: float = 7.0      # scale (lambda)
-    k: float = 0.8        # shape (kappa)
+
+    lam: float = 7.0  # scale (lambda)
+    k: float = 0.8  # shape (kappa)
 
     @classmethod
     def for_layer(cls, layer: MemoryLayer) -> WeibullParams:
@@ -213,6 +347,7 @@ class WeibullParams:
 @dataclass
 class Provenance:
     """Full lineage tracking — from Protogonos Minerva V2."""
+
     source: ProvenanceType = ProvenanceType.AGENT_OUTPUT
     agent_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -225,6 +360,7 @@ class Provenance:
 @dataclass
 class TemporalTriple:
     """Time-bounded knowledge triple for temporal reasoning."""
+
     subject: str = ""
     predicate: str = ""
     obj: str = ""
@@ -241,9 +377,10 @@ class ActionHook:
 
     Not 'I should...' (wish) but 'When X, do Y' (trigger + action).
     """
-    trigger: str = ""     # Condition: "When encountering X scenario"
-    action: str = ""      # Specific action: "Execute Y operation"
-    priority: int = 5     # 1=highest, 10=lowest
+
+    trigger: str = ""  # Condition: "When encountering X scenario"
+    action: str = ""  # Specific action: "Execute Y operation"
+    priority: int = 5  # 1=highest, 10=lowest
     last_triggered: float = 0.0
     trigger_count: int = 0
 
@@ -259,8 +396,31 @@ class ActionHook:
 
 
 @dataclass
+class PersonaProfile:
+    """Agent persona profile - MBTI, sentiment, stance, and activity patterns."""
+
+    mbti: str = ""
+    sentiment_bias: float = 0.0  # -1.0 ~ 1.0
+    stance: str = "neutral"
+    activity_pattern: dict = field(default_factory=dict)  # 活跃时段
+    influence_weight: float = 1.0
+    interested_topics: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mbti": self.mbti,
+            "sentiment_bias": self.sentiment_bias,
+            "stance": self.stance,
+            "activity_pattern": self.activity_pattern,
+            "influence_weight": self.influence_weight,
+            "interested_topics": self.interested_topics,
+        }
+
+
+@dataclass
 class NodePayload:
     """Content payload of a memory node."""
+
     content: str = ""
     modality: str = "text"  # text/code/image/audio/video/table/graph
     embedding: Optional[bytes] = None  # struct.pack compressed float32 array
@@ -288,6 +448,7 @@ class NodePayload:
 @dataclass
 class Node:
     """Core memory unit — the atom of Prometheus V8."""
+
     id: bytes = b""
     type: NodeType = NodeType.EPISODE
     layer: MemoryLayer = MemoryLayer.WORKING
@@ -330,8 +491,10 @@ class Node:
     @property
     def retention(self) -> float:
         return compute_weibull_retention(
-            self.age_days, self.importance,
-            self.weibull.lam, self.weibull.k,
+            self.age_days,
+            self.importance,
+            self.weibull.lam,
+            self.weibull.k,
             self.consecutive_hits,
         )
 
@@ -370,6 +533,7 @@ class Node:
 @dataclass
 class Edge:
     """Directed edge between memory nodes."""
+
     id: bytes = b""
     source_id: bytes = b""
     target_id: bytes = b""
@@ -398,6 +562,7 @@ class Edge:
 @dataclass
 class Genome:
     """Evolutionary genome — code as genotype."""
+
     code: str = ""
     fitness: float = 0.0
     age: int = 0
@@ -417,6 +582,7 @@ class Genome:
 @dataclass
 class FitnessResult:
     """3-stage fitness evaluation result."""
+
     composite: float = 0.0
     static_score: float = 0.0
     dynamic_score: float = 0.0
@@ -427,89 +593,147 @@ class FitnessResult:
 
 # ── Factory Functions ──────────────────────────────────────────
 
-def _make_node(type_: NodeType, layer: MemoryLayer, scope: MemoryScope,
-               importance: float, confidence: float, content: str,
-               tags: list[str] | None = None, **kwargs: Any) -> Node:
+
+def _make_node(
+    type_: NodeType,
+    layer: MemoryLayer,
+    scope: MemoryScope,
+    importance: float,
+    confidence: float,
+    content: str,
+    tags: list[str] | None = None,
+    **kwargs: Any,
+) -> Node:
     weibull = WeibullParams.for_layer(layer)
     payload = NodePayload(content=content)
     return Node(
-        type=type_, layer=layer, scope=scope,
-        importance=importance, confidence=confidence,
-        payload=payload, weibull=weibull,
-        tags=tags or [], **kwargs,
+        type=type_,
+        layer=layer,
+        scope=scope,
+        importance=importance,
+        confidence=confidence,
+        payload=payload,
+        weibull=weibull,
+        tags=tags or [],
+        **kwargs,
     )
 
 
 def create_episode_node(content: str, importance: float = 0.4, **kw: Any) -> Node:
-    return _make_node(NodeType.EPISODE, MemoryLayer.EPISODIC, MemoryScope.AGENT,
-                      importance, 0.6, content, **kw)
+    return _make_node(NodeType.EPISODE, MemoryLayer.EPISODIC, MemoryScope.AGENT, importance, 0.6, content, **kw)
 
 
 def create_fact_node(content: str, importance: float = 0.6, **kw: Any) -> Node:
-    return _make_node(NodeType.FACT, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL,
-                      importance, 0.7, content, **kw)
+    return _make_node(NodeType.FACT, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL, importance, 0.7, content, **kw)
 
 
 def create_insight_node(content: str, importance: float = 0.7, **kw: Any) -> Node:
-    return _make_node(NodeType.INSIGHT, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL,
-                      importance, 0.75, content, **kw)
+    return _make_node(NodeType.INSIGHT, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL, importance, 0.75, content, **kw)
 
 
 def create_pattern_node(content: str, importance: float = 0.65, **kw: Any) -> Node:
-    return _make_node(NodeType.PATTERN, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL,
-                      importance, 0.7, content, **kw)
+    return _make_node(NodeType.PATTERN, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL, importance, 0.7, content, **kw)
 
 
 def create_belief_node(content: str, importance: float = 0.8, **kw: Any) -> Node:
-    return _make_node(NodeType.BELIEF, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL,
-                      importance, 0.8, content, trust_level=TrustLevel.HIGH_SIGNAL, **kw)
+    return _make_node(
+        NodeType.BELIEF,
+        MemoryLayer.SEMANTIC,
+        MemoryScope.GLOBAL,
+        importance,
+        0.8,
+        content,
+        trust_level=TrustLevel.HIGH_SIGNAL,
+        **kw,
+    )
 
 
 def create_foresight_node(content: str, importance: float = 0.6, **kw: Any) -> Node:
-    return _make_node(NodeType.FORESIGHT, MemoryLayer.SEMANTIC, MemoryScope.GLOBAL,
-                      importance, 0.5, content, veracity=Veracity.HYPOTHETICAL, **kw)
+    return _make_node(
+        NodeType.FORESIGHT,
+        MemoryLayer.SEMANTIC,
+        MemoryScope.GLOBAL,
+        importance,
+        0.5,
+        content,
+        veracity=Veracity.HYPOTHETICAL,
+        **kw,
+    )
 
 
 def create_mutation_node(content: str, importance: float = 0.5, **kw: Any) -> Node:
-    return _make_node(NodeType.MUTATION, MemoryLayer.WORKING, MemoryScope.AGENT,
-                      importance, 0.5, content,
-                      provenance=Provenance(source=ProvenanceType.EVOLUTION), **kw)
+    return _make_node(
+        NodeType.MUTATION,
+        MemoryLayer.WORKING,
+        MemoryScope.AGENT,
+        importance,
+        0.5,
+        content,
+        provenance=Provenance(source=ProvenanceType.EVOLUTION),
+        **kw,
+    )
 
 
 def create_skill_node(content: str, importance: float = 0.7, **kw: Any) -> Node:
-    return _make_node(NodeType.SKILL, MemoryLayer.PROCEDURAL, MemoryScope.AGENT,
-                      importance, 0.75, content, **kw)
+    return _make_node(NodeType.SKILL, MemoryLayer.PROCEDURAL, MemoryScope.AGENT, importance, 0.75, content, **kw)
 
 
 def create_procedure_node(content: str, importance: float = 0.65, **kw: Any) -> Node:
-    return _make_node(NodeType.PROCEDURE, MemoryLayer.PROCEDURAL, MemoryScope.AGENT,
-                      importance, 0.7, content, **kw)
+    return _make_node(NodeType.PROCEDURE, MemoryLayer.PROCEDURAL, MemoryScope.AGENT, importance, 0.7, content, **kw)
 
 
 def create_dream_node(content: str, importance: float = 0.5, **kw: Any) -> Node:
-    return _make_node(NodeType.DREAM_RECORD, MemoryLayer.EPISODIC, MemoryScope.AGENT,
-                      importance, 0.5, content,
-                      provenance=Provenance(source=ProvenanceType.DREAM), **kw)
+    return _make_node(
+        NodeType.DREAM_RECORD,
+        MemoryLayer.EPISODIC,
+        MemoryScope.AGENT,
+        importance,
+        0.5,
+        content,
+        provenance=Provenance(source=ProvenanceType.DREAM),
+        **kw,
+    )
 
 
 def create_consolidation_node(content: str, importance: float = 0.6, **kw: Any) -> Node:
-    return _make_node(NodeType.CONSOLIDATION_RECORD, MemoryLayer.SEMANTIC, MemoryScope.AGENT,
-                      importance, 0.6, content,
-                      provenance=Provenance(source=ProvenanceType.CONSOLIDATION), **kw)
+    return _make_node(
+        NodeType.CONSOLIDATION_RECORD,
+        MemoryLayer.SEMANTIC,
+        MemoryScope.AGENT,
+        importance,
+        0.6,
+        content,
+        provenance=Provenance(source=ProvenanceType.CONSOLIDATION),
+        **kw,
+    )
 
 
 def create_learning_node(content: str, importance: float = 0.5, **kw: Any) -> Node:
-    return _make_node(NodeType.LEARNING_ROUND, MemoryLayer.EPISODIC, MemoryScope.AGENT,
-                      importance, 0.5, content,
-                      provenance=Provenance(source=ProvenanceType.SPONTANEOUS), **kw)
+    return _make_node(
+        NodeType.LEARNING_ROUND,
+        MemoryLayer.EPISODIC,
+        MemoryScope.AGENT,
+        importance,
+        0.5,
+        content,
+        provenance=Provenance(source=ProvenanceType.SPONTANEOUS),
+        **kw,
+    )
 
 
 def create_curiosity_node(content: str, importance: float = 0.4, priority: int = 5, **kw: Any) -> Node:
     hook = ActionHook(trigger=content, action=f"Explore: {content}", priority=priority)
-    return _make_node(NodeType.CURIOSITY_ITEM, MemoryLayer.WORKING, MemoryScope.AGENT,
-                      importance, 0.4, content, action_hook=hook, **kw)
+    return _make_node(
+        NodeType.CURIOSITY_ITEM,
+        MemoryLayer.WORKING,
+        MemoryScope.AGENT,
+        importance,
+        0.4,
+        content,
+        action_hook=hook,
+        **kw,
+    )
 
 
 def create_broadcast_node(content: str, importance: float = 0.7, **kw: Any) -> Node:
-    return _make_node(NodeType.BROADCAST, MemoryLayer.WORKING, MemoryScope.GLOBAL,
-                      importance, 0.7, content, **kw)
+    return _make_node(NodeType.BROADCAST, MemoryLayer.WORKING, MemoryScope.GLOBAL, importance, 0.7, content, **kw)

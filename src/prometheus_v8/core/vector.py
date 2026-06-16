@@ -1,9 +1,8 @@
 """Vector Store - 4 backends + compression + LRU cache."""
 
 from __future__ import annotations
-import hashlib
+
 import logging
-import math
 import os
 import pickle
 import struct
@@ -11,7 +10,8 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,9 @@ class NumpyVectorBackend(VectorBackend):
                 self._vectors[idx] = vec
             else:
                 self._ids.append(id)
-                self._vectors = np.vstack([self._vectors, vec.reshape(1, -1)]) if self._vectors.size else vec.reshape(1, -1)
+                self._vectors = (
+                    np.vstack([self._vectors, vec.reshape(1, -1)]) if self._vectors.size else vec.reshape(1, -1)
+                )
             if metadata:
                 self._metadata[id] = metadata
 
@@ -102,7 +104,9 @@ class NumpyVectorBackend(VectorBackend):
 class HNSWVectorBackend(VectorBackend):
     """HNSW approximate nearest neighbor search via hnswlib."""
 
-    def __init__(self, dimension: int = 384, max_elements: int = 100000, ef_construction: int = 200, M: int = 16) -> None:
+    def __init__(
+        self, dimension: int = 384, max_elements: int = 100000, ef_construction: int = 200, M: int = 16
+    ) -> None:
         self._dim = dimension
         self._max_elements = max_elements
         self._index = None
@@ -112,6 +116,7 @@ class HNSWVectorBackend(VectorBackend):
         self._lock = threading.RLock()
         try:
             import hnswlib
+
             self._hnswlib = hnswlib
             self._index = hnswlib.Index(space="cosine", dim=dimension)
             self._index.init_index(max_elements=max_elements, ef_construction=ef_construction, M=M)
@@ -170,6 +175,7 @@ class SQLiteVecBackend(VectorBackend):
         self._lock = threading.RLock()
         try:
             import sqlite_vec
+
             self._sqlite_vec = sqlite_vec
             self._init_db()
         except ImportError:
@@ -178,6 +184,7 @@ class SQLiteVecBackend(VectorBackend):
 
     def _init_db(self) -> None:
         import sqlite3
+
         self._conn = sqlite3.connect(self._db_path)
         self._conn.enable_load_extension(True)
         self._conn.load_extension(self._sqlite_vec.loadable_path())
@@ -198,8 +205,7 @@ class SQLiteVecBackend(VectorBackend):
                 return self._fallback.search(query, k)
             q = struct.pack(f"{self._dim}f", *query)
             rows = self._conn.execute(
-                "SELECT rowid, distance FROM vec_items WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-                (q, k)
+                "SELECT rowid, distance FROM vec_items WHERE embedding MATCH ? ORDER BY distance LIMIT ?", (q, k)
             ).fetchall()
             return [(str(r[0]), 1.0 - float(r[1])) for r in rows]
 

@@ -2,18 +2,23 @@
 
 From MiMo V5 dropped feature, restored and enhanced.
 """
+
 from __future__ import annotations
+
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
-from prometheus_v8.schema import Node, create_learning_node, MemoryLayer
+from typing import Any
+
+from prometheus_v8.schema import create_learning_node
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class LearningRound:
     """One round of daily learning."""
+
     id: str = ""
     topic: str = ""
     learned: str = ""
@@ -23,6 +28,7 @@ class LearningRound:
     applied: str = ""
     score: float = 0.0
     timestamp: float = field(default_factory=time.time)
+
 
 class DailyLearningCycle:
     """5-step daily learning cycle:
@@ -35,8 +41,7 @@ class DailyLearningCycle:
     With quota management: max 20 rounds/day, revision every 5 rounds.
     """
 
-    def __init__(self, store=None, llm=None, daily_quota: int = 20,
-                 revision_interval: int = 5) -> None:
+    def __init__(self, store=None, llm=None, daily_quota: int = 20, revision_interval: int = 5) -> None:
         self._store = store
         self._llm = llm
         self._daily_quota = daily_quota
@@ -86,8 +91,8 @@ class DailyLearningCycle:
                 prompt = f"Summarize key points about: {topic}\nContent: {content[:500]}"
                 resp = self._llm.complete([{"role": "user", "content": prompt}], temperature=0.3)
                 return resp[:500]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Learn step failed: {e}")
         return content[:300]
 
     def _reflect(self, learned: str) -> str:
@@ -97,8 +102,8 @@ class DailyLearningCycle:
                 prompt = f"Reflect on this knowledge. What might be missing or wrong?\n{learned[:300]}"
                 resp = self._llm.complete([{"role": "user", "content": prompt}], temperature=0.5)
                 return resp[:300]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Reflect step failed: {e}")
         return "Reflection: verify accuracy and completeness"
 
     def _reason(self, learned: str, reflected: str) -> str:
@@ -108,23 +113,40 @@ class DailyLearningCycle:
                 prompt = f"What are the implications and consequences?\nLearned: {learned[:200]}\nReflection: {reflected[:200]}"
                 resp = self._llm.complete([{"role": "user", "content": prompt}], temperature=0.5)
                 return resp[:300]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Reason step failed: {e}")
         return "Reasoning: apply logical deduction"
 
     def _derive(self, reasoned: str) -> str:
         """Step 4: Derive actionable principles."""
         if self._llm:
             try:
-                prompt = f"Extract one actionable principle from this reasoning:\n{reasoned[:300]}\nFormat: When X, do Y"
+                prompt = (
+                    f"Extract one actionable principle from this reasoning:\n{reasoned[:300]}\nFormat: When X, do Y"
+                )
                 resp = self._llm.complete([{"role": "user", "content": prompt}], temperature=0.3)
                 return resp[:200]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Derive step failed: {e}")
         return "Principle: apply insight from reasoning"
 
     def _apply(self, derived: str) -> str:
         """Step 5: Apply to current context."""
+        if self._store:
+            try:
+                # Search for relevant existing knowledge to update
+                results = self._store.search(derived[:50], limit=3)
+                if results:
+                    # Reinforce existing related knowledge
+                    for node in results:
+                        node.access_count += 1
+                        node.consecutive_hits += 1
+                    return f"Applied: reinforced {len(results)} related knowledge nodes with '{derived[:80]}'"
+                else:
+                    return f"Applied: no existing knowledge to reinforce, principle queued: {derived[:80]}"
+            except Exception as e:
+                logger.warning(f"Apply step failed: {e}")
+                return f"Application queued: {derived[:100]}"
         return f"Application queued: {derived[:100]}"
 
     def _score_round(self, lr: LearningRound) -> float:
@@ -155,5 +177,9 @@ class DailyLearningCycle:
 
     @property
     def stats(self) -> dict[str, Any]:
-        return {"rounds_today": self._rounds_today, "daily_quota": self._daily_quota,
-                "total_rounds": len(self._all_rounds), "revisions": self._revision_count}
+        return {
+            "rounds_today": self._rounds_today,
+            "daily_quota": self._daily_quota,
+            "total_rounds": len(self._all_rounds),
+            "revisions": self._revision_count,
+        }

@@ -6,12 +6,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -128,6 +132,13 @@ class LLMConfig:
     max_retries: int = 3
     fallback_model: str = ""
 
+    @property
+    def api_key_masked(self) -> str:
+        """Return masked API key for display."""
+        if not self.api_key or len(self.api_key) < 8:
+            return "***" if self.api_key else ""
+        return self.api_key[:4] + "****" + self.api_key[-4:]
+
 
 @dataclass
 class EmbeddingConfig:
@@ -156,6 +167,7 @@ class DashboardConfig:
 @dataclass
 class TrustConfig:
     """Knowledge trust system — from knowledge-conversion solution."""
+
     default_level: str = "pending"
     high_signal_sources: int = 2
     verified_usage_count: int = 1
@@ -167,6 +179,7 @@ class TrustConfig:
 @dataclass
 class PrometheusConfig:
     """Master configuration for Prometheus V8."""
+
     store: StoreConfig = field(default_factory=StoreConfig)
     vector: VectorConfig = field(default_factory=VectorConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
@@ -193,17 +206,21 @@ class ConfigManager:
 
     _instance: Optional[ConfigManager] = None
     _config: Optional[PrometheusConfig] = None
+    _lock = threading.Lock()  # Class-level lock for thread safety
 
     def __new__(cls) -> ConfigManager:
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     @classmethod
     def get(cls) -> PrometheusConfig:
-        if cls._config is None:
-            cls._config = cls.load()
-        return cls._config
+        with cls._lock:
+            if cls._config is None:
+                cls._config = cls.load()
+            return cls._config
 
     @classmethod
     def load(cls, config_path: str | None = None) -> PrometheusConfig:
@@ -236,8 +253,16 @@ class ConfigManager:
     @classmethod
     def reload(cls) -> PrometheusConfig:
         """Reload configuration (for hot reload)."""
-        cls._config = None
-        return cls.get()
+        with cls._lock:
+            old_config = cls._config
+            cls._config = None
+            try:
+                cls._config = cls.load()
+            except Exception as e:
+                logger.warning(f"Config reload failed, restoring previous: {e}")
+                cls._config = old_config  # Restore on failure
+                raise
+            return cls._config
 
     @staticmethod
     def _apply_dict(cfg: PrometheusConfig, data: dict[str, Any]) -> None:
@@ -259,7 +284,7 @@ class ConfigManager:
         for key, value in os.environ.items():
             if not key.startswith(prefix):
                 continue
-            parts = key[len(prefix):].lower().split("_", 1)
+            parts = key[len(prefix) :].lower().split("_", 1)
             if len(parts) == 2:
                 section_name, field_name = parts
                 if hasattr(cfg, section_name):
@@ -279,6 +304,22 @@ class ConfigManager:
                 field_name = parts[0]
                 if hasattr(cfg, field_name):
                     setattr(cfg, field_name, value)
+
+    @classmethod
+    def export_safe(cls) -> dict[str, Any]:
+        """Export config as dict with masked API key for safe logging/display."""
+        cfg = cls.get()
+        data = {}
+        for section_name in ("store", "vector", "graph", "search", "evolution", "organ", "lifecycle", "safety", "monitor", "communication", "governance", "embedding", "logging", "dashboard", "trust"):
+            section = getattr(cfg, section_name, None)
+            if section is not None:
+                data[section_name] = {k: v for k, v in section.__dict__.items() if not k.startswith("_")}
+        # LLM section with masked key
+        data["llm"] = {k: v for k, v in cfg.llm.__dict__.items() if not k.startswith("_")}
+        data["llm"]["api_key"] = cfg.llm.api_key_masked
+        data["data_dir"] = cfg.data_dir
+        data["debug"] = cfg.debug
+        return data
 
 
 def get_config() -> PrometheusConfig:

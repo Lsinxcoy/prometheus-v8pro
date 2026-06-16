@@ -1,6 +1,7 @@
 """Agent Descriptor and Registry - Agent metadata, capabilities, and lifecycle management."""
+
 from __future__ import annotations
-import json
+
 import logging
 import threading
 import time
@@ -8,16 +9,18 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+
 class AgentRole(str, Enum):
-    CEO = "ceo"             # Strategic decisions, uses pro model
-    WORKER = "worker"       # Task execution, uses standard model
-    EXPLORER = "explorer"   # Knowledge exploration and gap filling
-    JUDGE = "judge"         # Fitness evaluation and quality assessment
-    GUARDIAN = "guardian"   # Safety monitoring and enforcement
+    CEO = "ceo"  # Strategic decisions, uses pro model
+    WORKER = "worker"  # Task execution, uses standard model
+    EXPLORER = "explorer"  # Knowledge exploration and gap filling
+    JUDGE = "judge"  # Fitness evaluation and quality assessment
+    GUARDIAN = "guardian"  # Safety monitoring and enforcement
+
 
 class AgentState(str, Enum):
     IDLE = "idle"
@@ -26,9 +29,11 @@ class AgentState(str, Enum):
     DEAD = "dead"
     OFFLINE = "offline"
 
+
 @dataclass
 class AgentDescriptor:
     """Complete agent descriptor with identity, capabilities, and runtime state."""
+
     id: str = ""
     name: str = ""
     role: AgentRole = AgentRole.WORKER
@@ -48,7 +53,9 @@ class AgentDescriptor:
 
     @property
     def is_available(self) -> bool:
-        return self.state in (AgentState.IDLE, AgentState.WAITING) and len(self.current_tasks) < self.max_concurrent_tasks
+        return (
+            self.state in (AgentState.IDLE, AgentState.WAITING) and len(self.current_tasks) < self.max_concurrent_tasks
+        )
 
     @property
     def success_rate(self) -> float:
@@ -60,19 +67,25 @@ class AgentDescriptor:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "id": self.id, "name": self.name, "role": self.role.value,
-            "model": self.model, "model_tier": self.model_tier,
-            "capabilities": self.capabilities, "state": self.state.value,
-            "priority": self.priority, "is_available": self.is_available,
+            "id": self.id,
+            "name": self.name,
+            "role": self.role.value,
+            "model": self.model,
+            "model_tier": self.model_tier,
+            "capabilities": self.capabilities,
+            "state": self.state.value,
+            "priority": self.priority,
+            "is_available": self.is_available,
             "success_rate": round(self.success_rate, 3),
             "current_tasks": len(self.current_tasks),
             "completed_tasks": self.completed_tasks,
             "failed_tasks": self.failed_tasks,
         }
 
+
 class AgentPool:
     """Pool of agent descriptors with capability-based selection.
-    
+
     Features:
     - Register/deregister agents
     - Find available agents by capability
@@ -82,8 +95,7 @@ class AgentPool:
     - Load balancing across available agents
     """
 
-    def __init__(self, heartbeat_timeout: float = 90.0,
-                 dead_threshold: float = 300.0) -> None:
+    def __init__(self, heartbeat_timeout: float = 90.0, dead_threshold: float = 300.0) -> None:
         self._agents: dict[str, AgentDescriptor] = {}
         self._heartbeat_timeout = heartbeat_timeout
         self._dead_threshold = dead_threshold
@@ -144,26 +156,25 @@ class AgentPool:
                 if not agent.current_tasks:
                     agent.state = AgentState.IDLE
 
-    def find_available(self, required_capability: str = "",
-                       model_tier: str = "",
-                       role: AgentRole | None = None) -> list[AgentDescriptor]:
+    def find_available(
+        self, required_capability: str = "", model_tier: str = "", role: AgentRole | None = None
+    ) -> list[AgentDescriptor]:
         """Find available agents matching criteria."""
         with self._lock:
             candidates = [a for a in self._agents.values() if a.is_available]
-        
+
         if required_capability:
             candidates = [a for a in candidates if a.can_handle(required_capability)]
         if model_tier:
             candidates = [a for a in candidates if a.model_tier == model_tier]
         if role:
             candidates = [a for a in candidates if a.role == role]
-        
+
         # Sort by success rate (descending), then by load (ascending)
         candidates.sort(key=lambda a: (-a.success_rate, len(a.current_tasks)))
         return candidates
 
-    def find_best(self, required_capability: str = "",
-                  model_tier: str = "") -> AgentDescriptor | None:
+    def find_best(self, required_capability: str = "", model_tier: str = "") -> AgentDescriptor | None:
         """Find the single best available agent for a task."""
         candidates = self.find_available(required_capability, model_tier)
         return candidates[0] if candidates else None
@@ -172,11 +183,11 @@ class AgentPool:
         """Check health of all agents and mark dead ones."""
         now = time.time()
         result = {"healthy": 0, "degraded": 0, "dead": 0, "recovered": 0}
-        
+
         with self._lock:
             for agent in self._agents.values():
                 age = now - agent.last_heartbeat
-                
+
                 if age > self._dead_threshold:
                     if agent.state != AgentState.DEAD:
                         agent.state = AgentState.DEAD
@@ -193,7 +204,7 @@ class AgentPool:
                         agent.state = AgentState.IDLE
                         result["recovered"] += 1
                     result["healthy"] += 1
-        
+
         return result
 
     def add_event_callback(self, callback: Callable[[str, AgentDescriptor], None]) -> None:
@@ -224,5 +235,11 @@ class AgentPool:
                 "busy": sum(1 for a in self._agents.values() if a.state == AgentState.BUSY),
                 "dead": sum(1 for a in self._agents.values() if a.state == AgentState.DEAD),
                 "by_role": {r.value: sum(1 for a in self._agents.values() if a.role == r) for r in AgentRole},
-                "by_tier": defaultdict(int, {a.model_tier: sum(1 for b in self._agents.values() if b.model_tier == a.model_tier) for a in self._agents.values()}),
+                "by_tier": defaultdict(
+                    int,
+                    {
+                        a.model_tier: sum(1 for b in self._agents.values() if b.model_tier == a.model_tier)
+                        for a in self._agents.values()
+                    },
+                ),
             }

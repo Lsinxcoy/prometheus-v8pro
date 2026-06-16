@@ -1,16 +1,18 @@
 """Orchestrator Adapter - Task decomposition, worker assignment, and result aggregation."""
+
 from __future__ import annotations
+
 import heapq
 import logging
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
 
 class TaskState(str, Enum):
     PENDING = "pending"
@@ -20,15 +22,18 @@ class TaskState(str, Enum):
     CANCELLED = "cancelled"
     TIMEOUT = "timeout"
 
+
 class WorkerState(str, Enum):
     IDLE = "idle"
     BUSY = "busy"
     OFFLINE = "offline"
     DEAD = "dead"
 
+
 @dataclass
 class SubTask:
     """A decomposed subtask."""
+
     id: str = ""
     parent_id: str = ""
     name: str = ""
@@ -57,9 +62,11 @@ class SubTask:
     def is_terminal(self) -> bool:
         return self.state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED, TaskState.TIMEOUT)
 
+
 @dataclass
 class Worker:
     """A worker agent that can execute subtasks."""
+
     id: str = ""
     name: str = ""
     role: str = "worker"  # ceo/worker/explorer/judge
@@ -88,9 +95,11 @@ class Worker:
             return True
         return all(c in self.capabilities for c in required_capabilities)
 
+
 @dataclass
 class TaskResult:
     """Aggregated result from a decomposed task."""
+
     task_id: str = ""
     subtask_results: dict[str, Any] = field(default_factory=dict)
     subtask_errors: dict[str, str] = field(default_factory=dict)
@@ -105,9 +114,10 @@ class TaskResult:
     def completion_rate(self) -> float:
         return self.completed_subtasks / max(1, self.total_subtasks)
 
+
 class OrchestratorAdapter:
     """Task orchestrator with decomposition, worker assignment, and result aggregation.
-    
+
     Features:
     - Task decomposition into subtasks
     - Worker assignment based on capabilities and model tier
@@ -119,8 +129,9 @@ class OrchestratorAdapter:
     - Model tier assignment (CEO=pro, Worker=standard)
     """
 
-    def __init__(self, default_timeout: float = 300.0, max_retries: int = 2,
-                 health_check_interval: float = 60.0) -> None:
+    def __init__(
+        self, default_timeout: float = 300.0, max_retries: int = 2, health_check_interval: float = 60.0
+    ) -> None:
         self._default_timeout = default_timeout
         self._max_retries = max_retries
         self._health_interval = health_check_interval
@@ -152,16 +163,24 @@ class OrchestratorAdapter:
         with self._lock:
             self._workers.pop(worker_id, None)
 
-    def submit_task(self, name: str, description: str = "",
-                    required_capabilities: list[str] | None = None,
-                    priority: int = 5, timeout: float | None = None,
-                    metadata: dict | None = None) -> str:
+    def submit_task(
+        self,
+        name: str,
+        description: str = "",
+        required_capabilities: list[str] | None = None,
+        priority: int = 5,
+        timeout: float | None = None,
+        metadata: dict | None = None,
+    ) -> str:
         """Submit a task for decomposition and execution."""
         task_id = str(uuid.uuid4())[:8]
         task = SubTask(
-            id=task_id, name=name, description=description,
+            id=task_id,
+            name=name,
+            description=description,
             required_capabilities=required_capabilities or [],
-            priority=priority, timeout_seconds=timeout or self._default_timeout,
+            priority=priority,
+            timeout_seconds=timeout or self._default_timeout,
             metadata=metadata or {},
         )
         with self._lock:
@@ -175,40 +194,46 @@ class OrchestratorAdapter:
         task = self._tasks.get(task_id)
         if not task:
             return []
-        
+
         if self._decompose_fn:
             subtasks = self._decompose_fn(task.name, task.metadata)
         else:
             # Default decomposition: single subtask
-            subtasks = [SubTask(
-                id=f"{task_id}_0", parent_id=task_id,
-                name=task.name, description=task.description,
-                required_capabilities=task.required_capabilities,
-                priority=task.priority, timeout_seconds=task.timeout_seconds,
-            )]
-        
+            subtasks = [
+                SubTask(
+                    id=f"{task_id}_0",
+                    parent_id=task_id,
+                    name=task.name,
+                    description=task.description,
+                    required_capabilities=task.required_capabilities,
+                    priority=task.priority,
+                    timeout_seconds=task.timeout_seconds,
+                )
+            ]
+
         for st in subtasks:
             with self._lock:
                 self._tasks[st.id] = st
-        
+
         return subtasks
 
     def assign_worker(self, subtask: SubTask) -> Worker | None:
         """Assign the best available worker for a subtask."""
         with self._lock:
-            candidates = [w for w in self._workers.values()
-                         if w.is_available and w.can_handle(subtask.required_capabilities)]
-        
+            candidates = [
+                w for w in self._workers.values() if w.is_available and w.can_handle(subtask.required_capabilities)
+            ]
+
         if not candidates:
             return None
-        
+
         # Prefer workers with matching model tier for the task type
         # CEO tasks -> pro tier, Worker tasks -> standard tier
         if subtask.required_capabilities and "strategic" in subtask.required_capabilities:
             pro_workers = [w for w in candidates if w.model_tier == "pro"]
             if pro_workers:
                 return max(pro_workers, key=lambda w: w.success_rate)
-        
+
         # Otherwise pick the worker with best success rate
         return max(candidates, key=lambda w: (w.success_rate, -len(w.current_tasks)))
 
@@ -217,41 +242,40 @@ class OrchestratorAdapter:
         subtask = self._tasks.get(subtask_id)
         if not subtask:
             return None
-        
+
         worker = self.assign_worker(subtask)
         if not worker:
             subtask.state = TaskState.PENDING
             logger.warning(f"No available worker for subtask {subtask.name}")
             return None
-        
+
         # Assign worker
         subtask.assigned_worker = worker.id
         subtask.state = TaskState.RUNNING
         subtask.started_at = time.time()
         worker.state = WorkerState.BUSY
         worker.current_tasks.append(subtask_id)
-        
+
         try:
             if self._execute_fn:
                 result = self._execute_fn(subtask, worker)
             else:
                 # Default: mark as completed
                 result = f"Completed: {subtask.name}"
-            
+
             subtask.result = result
             subtask.state = TaskState.COMPLETED
             subtask.completed_at = time.time()
             worker.completed_tasks += 1
             worker.avg_task_duration = (
-                (worker.avg_task_duration * (worker.completed_tasks - 1) + subtask.duration)
-                / worker.completed_tasks
-            )
+                worker.avg_task_duration * (worker.completed_tasks - 1) + subtask.duration
+            ) / worker.completed_tasks
             return result
-            
+
         except Exception as e:
             subtask.error = str(e)
             subtask.retry_count += 1
-            
+
             if subtask.retry_count < subtask.max_retries:
                 subtask.state = TaskState.PENDING
                 logger.warning(f"Subtask {subtask.name} failed, retrying ({subtask.retry_count}/{subtask.max_retries})")
@@ -261,7 +285,7 @@ class OrchestratorAdapter:
                 worker.failed_tasks += 1
                 logger.error(f"Subtask {subtask.name} failed after {subtask.max_retries} retries: {e}")
             return None
-            
+
         finally:
             if subtask_id in worker.current_tasks:
                 worker.current_tasks.remove(subtask_id)
@@ -271,12 +295,12 @@ class OrchestratorAdapter:
     def aggregate_results(self, parent_task_id: str) -> TaskResult:
         """Aggregate results from all subtasks of a parent task."""
         subtasks = [t for t in self._tasks.values() if t.parent_id == parent_task_id]
-        
+
         result = TaskResult(
             task_id=parent_task_id,
             total_subtasks=len(subtasks),
         )
-        
+
         for st in subtasks:
             if st.state == TaskState.COMPLETED:
                 result.completed_subtasks += 1
@@ -285,10 +309,10 @@ class OrchestratorAdapter:
                 result.failed_subtasks += 1
                 result.subtask_errors[st.id] = st.error
             result.total_duration = max(result.total_duration, st.duration)
-        
+
         result.success = result.completed_subtasks == result.total_subtasks
         result.summary = f"Completed {result.completed_subtasks}/{result.total_subtasks} subtasks"
-        
+
         self._results[parent_task_id] = result
         return result
 
@@ -337,7 +361,9 @@ class OrchestratorAdapter:
                 "pending_tasks": sum(1 for t in self._tasks.values() if t.state == TaskState.PENDING),
                 "running_tasks": sum(1 for t in self._tasks.values() if t.state == TaskState.RUNNING),
                 "completed_tasks": sum(1 for t in self._tasks.values() if t.state == TaskState.COMPLETED),
-                "failed_tasks": sum(1 for t in self._tasks.values() if t.state in (TaskState.FAILED, TaskState.TIMEOUT)),
+                "failed_tasks": sum(
+                    1 for t in self._tasks.values() if t.state in (TaskState.FAILED, TaskState.TIMEOUT)
+                ),
                 "registered_workers": len(self._workers),
                 "available_workers": sum(1 for w in self._workers.values() if w.is_available),
             }

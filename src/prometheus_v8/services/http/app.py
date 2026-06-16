@@ -1,41 +1,66 @@
 """HTTP API Server - FastAPI-based REST API with 20 endpoints."""
+
 from __future__ import annotations
+
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Default allowed origins (configurable via config)
+DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:8082"]
+
 try:
-    from fastapi import FastAPI, HTTPException, Query, Body, Depends
+    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
+
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
 
+
+async def verify_api_key(x_api_key: str = Header("", alias="X-API-Key")) -> bool:
+    """Verify API key if configured. Empty key = no auth required."""
+    from prometheus_v8.config import get_config
+
+    api_key = get_config().llm.api_key
+    if api_key and x_api_key != api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
+
+
 def create_app(store=None, engine=None, safety=None, monitor=None, governance=None) -> Any:
     """Create the FastAPI application with all endpoints.
-    
+
     Returns the FastAPI app if fastapi is available, otherwise a mock app.
     """
     if not HAS_FASTAPI:
         return _create_mock_app()
-    
+
     app = FastAPI(
         title="Prometheus V8",
         description="Self-Evolving AI Agent Memory Platform",
         version="8.0.0",
     )
-    
+
+    # Read allowed origins from config, fallback to defaults
+    try:
+        from prometheus_v8.config import get_config
+
+        allowed_origins = getattr(get_config().dashboard, "allowed_origins", None) or DEFAULT_ALLOWED_ORIGINS
+    except Exception as e:
+        logger.debug(f"Could not load CORS config, using defaults: {e}")
+        allowed_origins = DEFAULT_ALLOWED_ORIGINS
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
+
     # Store references
     app.state.store = store
     app.state.engine = engine
@@ -59,13 +84,16 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
 
     # ── Node CRUD ──────────────────────────────────────────────
     @app.post("/nodes")
-    async def create_node(content: str = Body(..., embed=True),
-                          node_type: str = "fact",
-                          importance: float = 0.5,
-                          tags: list[str] = Query(default=[])):
+    async def create_node(
+        content: str = Body(..., embed=True),
+        node_type: str = "fact",
+        importance: float = 0.5,
+        tags: list[str] = Query(default=[]),
+    ):
         if not store:
             raise HTTPException(503, "Store not available")
-        from prometheus_v8.schema import create_fact_node, create_insight_node, create_episode_node
+        from prometheus_v8.schema import create_episode_node, create_fact_node, create_insight_node
+
         creators = {"fact": create_fact_node, "insight": create_insight_node, "episode": create_episode_node}
         creator = creators.get(node_type, create_fact_node)
         node = creator(content=content, importance=importance, tags=tags)
@@ -80,11 +108,17 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
         node = store.get_node(nid)
         if not node:
             raise HTTPException(404, "Node not found")
-        return {"id": node_id, "type": node.type.value, "content": node.payload.content,
-                "importance": node.importance, "layer": node.layer.value,
-                "trust_level": node.trust_level.value, "access_count": node.access_count}
+        return {
+            "id": node_id,
+            "type": node.type.value,
+            "content": node.payload.content,
+            "importance": node.importance,
+            "layer": node.layer.value,
+            "trust_level": node.trust_level.value,
+            "access_count": node.access_count,
+        }
 
-    @app.delete("/nodes/{node_id}")
+    @app.delete("/nodes/{node_id}", dependencies=[Depends(verify_api_key)])
     async def delete_node(node_id: str):
         if not store:
             raise HTTPException(503, "Store not available")
@@ -94,20 +128,29 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
         raise HTTPException(404, "Node not found")
 
     @app.get("/nodes")
-    async def list_nodes(layer: str = Query(default=""),
-                         node_type: str = Query(default=""),
-                         limit: int = Query(default=20, le=100)):
+    async def list_nodes(
+        layer: str = Query(default=""), node_type: str = Query(default=""), limit: int = Query(default=20, le=100)
+    ):
         if not store:
             raise HTTPException(503, "Store not available")
         from prometheus_v8.schema import MemoryLayer, NodeType
+
         if layer:
             nodes = store.get_nodes_by_layer(MemoryLayer(layer), limit)
         elif node_type:
             nodes = store.get_nodes_by_type(NodeType(node_type), limit)
         else:
             nodes = store.search_fts("*", limit)
-        return [{"id": n.id.hex(), "type": n.type.value, "content": n.payload.content[:100],
-                 "importance": n.importance, "layer": n.layer.value} for n in nodes]
+        return [
+            {
+                "id": n.id.hex(),
+                "type": n.type.value,
+                "content": n.payload.content[:100],
+                "importance": n.importance,
+                "layer": n.layer.value,
+            }
+            for n in nodes
+        ]
 
     # ── Search ─────────────────────────────────────────────────
     @app.get("/search")
@@ -115,19 +158,30 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
         if not store:
             raise HTTPException(503, "Store not available")
         nodes = store.search_fts(q, limit)
-        return [{"id": n.id.hex(), "content": n.payload.content[:200],
-                 "importance": n.importance, "type": n.type.value} for n in nodes]
+        return [
+            {"id": n.id.hex(), "content": n.payload.content[:200], "importance": n.importance, "type": n.type.value}
+            for n in nodes
+        ]
 
     # ── Graph ──────────────────────────────────────────────────
     @app.post("/edges")
-    async def create_edge(source_id: str = Body(...), target_id: str = Body(...),
-                          edge_type: str = Body(default="related"),
-                          weight: float = Body(default=1.0)):
+    async def create_edge(
+        source_id: str = Body(...),
+        target_id: str = Body(...),
+        edge_type: str = Body(default="related"),
+        weight: float = Body(default=1.0),
+    ):
         if not store:
             raise HTTPException(503, "Store not available")
         from prometheus_v8.schema import Edge, EdgeType, generate_uuidv7
-        edge = Edge(id=generate_uuidv7(), source_id=bytes.fromhex(source_id),
-                    target_id=bytes.fromhex(target_id), type=EdgeType(edge_type), weight=weight)
+
+        edge = Edge(
+            id=generate_uuidv7(),
+            source_id=bytes.fromhex(source_id),
+            target_id=bytes.fromhex(target_id),
+            type=EdgeType(edge_type),
+            weight=weight,
+        )
         store.add_edge(edge)
         return {"id": edge.id.hex(), "type": edge_type}
 
@@ -137,16 +191,26 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
             raise HTTPException(503, "Store not available")
         nid = bytes.fromhex(node_id)
         edges = store.get_edges(nid)
-        return [{"id": e.id.hex(), "source": e.source_id.hex(), "target": e.target_id.hex(),
-                 "type": e.type.value, "weight": e.weight} for e in edges]
+        return [
+            {
+                "id": e.id.hex(),
+                "source": e.source_id.hex(),
+                "target": e.target_id.hex(),
+                "type": e.type.value,
+                "weight": e.weight,
+            }
+            for e in edges
+        ]
 
     # ── Evolution ──────────────────────────────────────────────
-    @app.post("/evolution/evolve")
-    async def evolve(code: str = Body(...), generations: int = Body(default=5),
-                     fitness_threshold: float = Body(default=0.99)):
+    @app.post("/evolution/evolve", dependencies=[Depends(verify_api_key)])
+    async def evolve(
+        code: str = Body(...), generations: int = Body(default=5), fitness_threshold: float = Body(default=0.99)
+    ):
         if not engine:
             raise HTTPException(503, "Evolution engine not available")
         from prometheus_v8.schema import Genome
+
         genome = Genome(code=code, fitness=0.3)
         result = engine.evolve(genome, max_generations=generations, fitness_threshold=fitness_threshold)
         return {"generation": engine.generation, "best_fitness": result.fitness if result else 0}
@@ -155,10 +219,13 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
     async def evolution_status():
         if not engine:
             return {"generation": 0, "best_fitness": 0}
-        return {"generation": engine.generation, "best_fitness": engine.best_genome.fitness if engine.best_genome else 0}
+        return {
+            "generation": engine.generation,
+            "best_fitness": engine.best_genome.fitness if engine.best_genome else 0,
+        }
 
     # ── Safety ─────────────────────────────────────────────────
-    @app.post("/safety/check")
+    @app.post("/safety/check", dependencies=[Depends(verify_api_key)])
     async def safety_check(action: str = Body(..., embed=True)):
         if not safety:
             raise HTTPException(503, "Safety manager not available")
@@ -187,8 +254,7 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
             return {"system": "unknown"}
         heartbeat = monitor.get("heartbeat")
         if heartbeat:
-            return {"system_status": heartbeat.get_system_status().value,
-                    "components": heartbeat.stats}
+            return {"system_status": heartbeat.get_system_status().value, "components": heartbeat.stats}
         return {}
 
     # ── Governance ─────────────────────────────────────────────
@@ -223,22 +289,25 @@ def create_app(store=None, engine=None, safety=None, monitor=None, governance=No
     @app.get("/dashboard")
     async def dashboard():
         from prometheus_v8.visualization.dashboard import DashboardProvider
+
         dp = DashboardProvider(store=store, engine=engine, safety=safety, monitor=monitor)
         return dp.get_overview()
 
     return app
 
+
 def _create_mock_app():
     """Create a mock app when FastAPI is not available."""
+
     class MockApp:
         def __init__(self):
             self.routes = []
             self.state = type("State", (), {"store": None, "engine": None, "safety": None})()
-        
+
         def run(self, host: str = "0.0.0.0", port: int = 8082, **kwargs):
             logger.info(f"Mock app would run on {host}:{port}")
-        
+
         def __call__(self, *args, **kwargs):
             return self
-    
+
     return MockApp()

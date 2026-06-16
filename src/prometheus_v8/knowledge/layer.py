@@ -6,21 +6,25 @@ From knowledge-conversion solution:
 - Revision rounds every 5 operations
 - Structured <-> Unstructured bidirectional conversion
 """
+
 from __future__ import annotations
+
 import json
 import logging
 import re
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Optional
-from prometheus_v8.schema import Node, NodeType, MemoryLayer, TrustLevel, create_fact_node, create_insight_node
+from typing import Any
+
+from prometheus_v8.schema import Node, NodeType, TrustLevel, create_fact_node
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class KnowledgeGap:
     """A detected gap in knowledge coverage."""
+
     domain: str = ""
     coverage: float = 0.0
     total_nodes: int = 0
@@ -28,11 +32,13 @@ class KnowledgeGap:
     recommendation: str = ""
     priority: int = 5
 
+
 @dataclass
 class ActionHook:
     """An action hook attached to knowledge: When X, do Y."""
+
     trigger: str = ""  # When condition
-    action: str = ""   # Do action
+    action: str = ""  # Do action
     confidence: float = 0.5
     source_node_id: bytes = b""
     execution_count: int = 0
@@ -48,9 +54,11 @@ class ActionHook:
         self.last_triggered = time.time()
         return self.action
 
+
 @dataclass
 class ConversionResult:
     """Result of a knowledge conversion operation."""
+
     source_type: str = ""
     target_type: str = ""
     input_content: str = ""
@@ -59,10 +67,11 @@ class ConversionResult:
     fidelity: float = 0.0  # How well the conversion preserved meaning
     metadata: dict = field(default_factory=dict)
 
+
 class KnowledgeLayer:
     """Unified knowledge management with gap detection, trust-aware access,
     action hooks, and structured/unstructured conversion.
-    
+
     Features:
     - Trust-aware access: get_verified(), get_reference(), get_all()
     - Gap detection: identify domains with low verified knowledge coverage
@@ -80,7 +89,7 @@ class KnowledgeLayer:
         self._gap_history: list[KnowledgeGap] = []
         self._action_hooks: list[ActionHook] = []
         self._conversion_history: list[ConversionResult] = []
-        
+
         # Domain keywords for gap detection
         self._domains: dict[str, list[str]] = {
             "architecture": ["pattern", "design", "structure", "module", "component", "system"],
@@ -126,16 +135,20 @@ class KnowledgeLayer:
                 nodes = self._search(kw, limit=20)
                 total += len(nodes)
                 verified += sum(1 for n in nodes if n.trust_level == TrustLevel.VERIFIED)
-            
+
             coverage = verified / max(1, total)
             if coverage < 0.3:
-                gaps.append(KnowledgeGap(
-                    domain=domain, coverage=coverage,
-                    total_nodes=total, verified_nodes=verified,
-                    recommendation=f"Need more verified knowledge in {domain} (coverage: {coverage:.1%})",
-                    priority=int((1 - coverage) * 10),
-                ))
-        
+                gaps.append(
+                    KnowledgeGap(
+                        domain=domain,
+                        coverage=coverage,
+                        total_nodes=total,
+                        verified_nodes=verified,
+                        recommendation=f"Need more verified knowledge in {domain} (coverage: {coverage:.1%})",
+                        priority=int((1 - coverage) * 10),
+                    )
+                )
+
         self._gap_history.extend(gaps)
         return sorted(gaps, key=lambda g: g.priority, reverse=True)
 
@@ -146,11 +159,14 @@ class KnowledgeLayer:
 
     # ── Action Hooks ───────────────────────────────────────────
 
-    def add_action_hook(self, trigger: str, action: str, confidence: float = 0.5,
-                        source_node_id: bytes = b"") -> ActionHook:
+    def add_action_hook(
+        self, trigger: str, action: str, confidence: float = 0.5, source_node_id: bytes = b""
+    ) -> ActionHook:
         """Add an action hook: When trigger, do action."""
         hook = ActionHook(
-            trigger=trigger, action=action, confidence=confidence,
+            trigger=trigger,
+            action=action,
+            confidence=confidence,
             source_node_id=source_node_id,
         )
         self._action_hooks.append(hook)
@@ -177,7 +193,7 @@ class KnowledgeLayer:
     def structured_to_unstructured(self, node: Node) -> ConversionResult:
         """Convert structured knowledge (facts, rules) to natural language."""
         content = node.payload.content
-        
+
         # Simple rule-based conversion
         if node.type == NodeType.FACT:
             output = f"It is known that {content}."
@@ -187,11 +203,14 @@ class KnowledgeLayer:
             output = f"A change was made: {content}."
         else:
             output = content
-        
+
         result = ConversionResult(
-            source_type=node.type.value, target_type="natural_language",
-            input_content=content, output_content=output,
-            success=True, fidelity=0.8,
+            source_type=node.type.value,
+            target_type="natural_language",
+            input_content=content,
+            output_content=output,
+            success=True,
+            fidelity=0.8,
         )
         self._conversion_history.append(result)
         self._check_revision()
@@ -201,36 +220,40 @@ class KnowledgeLayer:
         """Convert unstructured text to structured knowledge nodes."""
         # Extract potential facts using simple heuristics
         facts = []
-        
+
         # Pattern: "X is Y" -> fact
         is_pattern = re.findall(r"([A-Z][^.]+) is ([^.]+)", text)
         for subject, definition in is_pattern:
             facts.append(f"{subject} is {definition}")
-        
+
         # Pattern: "When X, do Y" -> action hook
         when_pattern = re.findall(r"[Ww]hen ([^,.]+),? (?:do |then |we should )?([^.]+)", text)
         for trigger, action in when_pattern:
             self.add_action_hook(trigger.strip(), action.strip())
-        
+
         # Pattern: sentences with "important" or "key" -> insights
         insight_pattern = re.findall(r"(?:important|key|critical|essential)[^:]*[:]? ([^.]+)", text, re.IGNORECASE)
         for insight in insight_pattern:
             facts.append(insight.strip())
-        
+
         # If no patterns found, treat whole text as a fact
         if not facts:
             facts = [text[:200]]
-        
+
         # Store extracted facts
         for fact_content in facts:
             node = create_fact_node(content=fact_content, importance=0.5)
             if self._store:
                 self._store.add_node(node)
-        
+
         result = ConversionResult(
-            source_type="natural_language", target_type="structured",
-            input_content=text[:200], output_content=json.dumps(facts, ensure_ascii=False),
-            success=True, fidelity=0.6, metadata={"facts_extracted": len(facts)},
+            source_type="natural_language",
+            target_type="structured",
+            input_content=text[:200],
+            output_content=json.dumps(facts, ensure_ascii=False),
+            success=True,
+            fidelity=0.6,
+            metadata={"facts_extracted": len(facts)},
         )
         self._conversion_history.append(result)
         self._check_revision()
@@ -248,12 +271,14 @@ class KnowledgeLayer:
         """Run a forced revision round to verify knowledge quality."""
         self._revision_count += 1
         logger.info(f"Knowledge revision round #{self._revision_count} at operation {self._operation_count}")
-        
+
         # Check for contradictions in recent conversions
-        recent = self._conversion_history[-self._revision_interval:]
+        recent = self._conversion_history[-self._revision_interval :]
         for conv in recent:
             if conv.fidelity < 0.5:
-                logger.warning(f"Low fidelity conversion: {conv.source_type} -> {conv.target_type} (fidelity={conv.fidelity:.2f})")
+                logger.warning(
+                    f"Low fidelity conversion: {conv.source_type} -> {conv.target_type} (fidelity={conv.fidelity:.2f})"
+                )
 
     # ── Statistics ─────────────────────────────────────────────
 

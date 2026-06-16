@@ -1,32 +1,33 @@
 """Three-Stage Fitness Evaluation - Static + Dynamic + LLM-as-Judge."""
+
 from __future__ import annotations
+
 import ast
 import json
 import logging
 import re
-import time
-from dataclasses import dataclass, field
-from typing import Any, Optional
-from prometheus_v8.schema import Genome, FitnessResult
+
+from prometheus_v8.schema import FitnessResult, Genome
 
 logger = logging.getLogger(__name__)
 
+
 class ThreeStageFitness:
     """3-stage fitness: static(0.2) + dynamic(0.4) + LLM-as-Judge(0.4)."""
-    
+
     def __init__(self, llm=None, weights: tuple[float, float, float] = (0.2, 0.4, 0.4)) -> None:
         self._llm = llm
         self._weights = weights
         self._history: list[FitnessResult] = []
-    
+
     def evaluate(self, genome: Genome) -> FitnessResult:
         """Evaluate genome fitness through 3 stages."""
         static = self._static_analysis(genome)
         dynamic = self._dynamic_validation(genome)
         llm_score = self._llm_judge(genome)
-        
-        composite = (self._weights[0] * static + self._weights[1] * dynamic + self._weights[2] * llm_score)
-        
+
+        composite = self._weights[0] * static + self._weights[1] * dynamic + self._weights[2] * llm_score
+
         result = FitnessResult(
             composite=composite,
             static_score=static,
@@ -37,12 +38,12 @@ class ThreeStageFitness:
         )
         self._history.append(result)
         return result
-    
+
     def _static_analysis(self, genome: Genome) -> float:
         """Stage 1: Static code analysis (syntax, complexity, style)."""
         if not genome.code:
             return 0.1
-        
+
         score = 0.0
         # Syntax check
         try:
@@ -50,65 +51,66 @@ class ThreeStageFitness:
             score += 0.3
         except SyntaxError:
             return 0.0
-        
+
         # Complexity (prefer moderate complexity)
-        lines = genome.code.count('\n') + 1
+        lines = genome.code.count("\n") + 1
         if 10 <= lines <= 200:
             score += 0.2
         elif lines < 10:
             score += 0.1
-        
+
         # Has docstrings
         if '"""' in genome.code or "'''" in genome.code:
             score += 0.1
-        
+
         # Has type hints
-        if '-> ' in genome.code or ': ' in genome.code:
+        if "-> " in genome.code or ": " in genome.code:
             score += 0.1
-        
+
         # Has error handling
-        if 'try:' in genome.code or 'except' in genome.code:
+        if "try:" in genome.code or "except" in genome.code:
             score += 0.1
-        
+
         # Has tests
-        if 'assert ' in genome.code or 'def test_' in genome.code:
+        if "assert " in genome.code or "def test_" in genome.code:
             score += 0.2
-        
+
         return min(1.0, score)
-    
+
     def _dynamic_validation(self, genome: Genome) -> float:
         """Stage 2: Dynamic validation (execution, tests, performance)."""
         if not genome.code:
             return 0.0
-        
+
         score = 0.0
-        
+
         # Can it be imported/executed?
         try:
-            compile(genome.code, '<evolution>', 'exec')
+            compile(genome.code, "<evolution>", "exec")
             score += 0.3
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Genome compile check failed: {e}")
             return 0.0
-        
+
         # Skill coverage
         if genome.skills:
             score += min(0.3, len(genome.skills) * 0.1)
-        
+
         # Tool coverage
         if genome.tools:
             score += min(0.2, len(genome.tools) * 0.05)
-        
+
         # Config quality
         if genome.config:
             score += min(0.2, len(genome.config) * 0.05)
-        
+
         return min(1.0, score)
-    
+
     def _llm_judge(self, genome: Genome) -> float:
         """Stage 3: LLM-as-Judge evaluation."""
         if not self._llm or not genome.code:
             return 0.5  # Neutral score when no LLM available
-        
+
         try:
             prompt = f"""Evaluate this code/solution on a 0.0-1.0 scale considering:
 1. Correctness: Does it solve the intended problem?
@@ -124,10 +126,10 @@ Config: {json.dumps(genome.config)[:200]}
 
 Return ONLY a number between 0.0 and 1.0."""
             response = self._llm.complete([{"role": "user", "content": prompt}], temperature=0.1, max_tokens=10)
-            match = re.search(r'[\d.]+', response)
+            match = re.search(r"[\d.]+", response)
             if match:
                 return max(0.0, min(1.0, float(match.group())))
         except Exception as e:
             logger.warning(f"LLM judge error: {e}")
-        
+
         return 0.5

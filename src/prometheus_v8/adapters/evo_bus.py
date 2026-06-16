@@ -1,5 +1,7 @@
 """EVO Bus Adapter - Redis Stream based inter-agent communication with graceful degradation."""
+
 from __future__ import annotations
+
 import json
 import logging
 import threading
@@ -7,12 +9,13 @@ import time
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
 try:
     import redis
+
     HAS_REDIS = True
 except ImportError:
     HAS_REDIS = False
@@ -21,9 +24,11 @@ REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0
 
+
 @dataclass
 class BusMessage:
     """A message on the bus."""
+
     id: str = ""
     topic: str = ""
     sender: str = ""
@@ -34,16 +39,20 @@ class BusMessage:
 
     def serialize(self) -> dict[str, str]:
         return {
-            "id": self.id, "topic": self.topic, "sender": self.sender,
+            "id": self.id,
+            "topic": self.topic,
+            "sender": self.sender,
             "payload": json.dumps(self.payload, ensure_ascii=False),
             "timestamp": str(self.timestamp),
-            "reply_to": self.reply_to, "priority": str(self.priority),
+            "reply_to": self.reply_to,
+            "priority": str(self.priority),
         }
 
     @classmethod
     def deserialize(cls, data: dict[str, str]) -> "BusMessage":
         return cls(
-            id=data.get("id", ""), topic=data.get("topic", ""),
+            id=data.get("id", ""),
+            topic=data.get("topic", ""),
             sender=data.get("sender", ""),
             payload=json.loads(data.get("payload", "{}")),
             timestamp=float(data.get("timestamp", 0)),
@@ -51,9 +60,11 @@ class BusMessage:
             priority=int(data.get("priority", 0)),
         )
 
+
 @dataclass
 class AgentInfo:
     """Information about a registered agent."""
+
     id: str = ""
     name: str = ""
     role: str = "worker"
@@ -62,6 +73,7 @@ class AgentInfo:
     channels: list[str] = field(default_factory=list)
     last_heartbeat: float = field(default_factory=time.time)
     status: str = "online"
+
 
 class InMemoryBus:
     """In-memory fallback message bus when Redis is unavailable."""
@@ -98,17 +110,24 @@ class InMemoryBus:
         with self._lock:
             return list(self._queues.get(topic, deque()))[:count]
 
+
 class EVOBusAdapter:
     """Redis Stream based message bus for inter-agent communication.
-    
+
     Gracefully degrades to InMemoryBus when Redis is unavailable.
     Supports agent registration, topic routing, consumer groups,
     heartbeat tracking, and dead letter queue.
     """
 
-    def __init__(self, redis_host: str = REDIS_HOST, redis_port: int = REDIS_PORT,
-                 redis_db: int = REDIS_DB, redis_password: str = "",
-                 agent_id: str = "", heartbeat_interval: float = 30.0) -> None:
+    def __init__(
+        self,
+        redis_host: str = REDIS_HOST,
+        redis_port: int = REDIS_PORT,
+        redis_db: int = REDIS_DB,
+        redis_password: str = "",
+        agent_id: str = "",
+        heartbeat_interval: float = 30.0,
+    ) -> None:
         self._redis_host = redis_host
         self._redis_port = redis_port
         self._redis_db = redis_db
@@ -125,7 +144,7 @@ class EVOBusAdapter:
         self._lock = threading.RLock()
         self._heartbeat_thread: threading.Thread | None = None
         self._running = False
-        
+
         self._connect_redis()
 
     def _connect_redis(self) -> None:
@@ -135,9 +154,12 @@ class EVOBusAdapter:
             return
         try:
             self._redis_client = redis.Redis(
-                host=self._redis_host, port=self._redis_port,
-                db=self._redis_db, password=self._redis_password or None,
-                socket_timeout=5.0, socket_connect_timeout=5.0,
+                host=self._redis_host,
+                port=self._redis_port,
+                db=self._redis_db,
+                password=self._redis_password or None,
+                socket_timeout=5.0,
+                socket_connect_timeout=5.0,
             )
             self._redis_client.ping()
             self._using_redis = True
@@ -147,15 +169,18 @@ class EVOBusAdapter:
             self._redis_client = None
             self._using_redis = False
 
-    def publish(self, topic: str, payload: dict, sender: str = "",
-                reply_to: str = "", priority: int = 0) -> str:
+    def publish(self, topic: str, payload: dict, sender: str = "", reply_to: str = "", priority: int = 0) -> str:
         """Publish a message to a topic."""
         msg = BusMessage(
-            id=str(uuid.uuid4()), topic=topic, sender=sender or self._agent_id,
-            payload=payload, reply_to=reply_to, priority=priority,
+            id=str(uuid.uuid4()),
+            topic=topic,
+            sender=sender or self._agent_id,
+            payload=payload,
+            reply_to=reply_to,
+            priority=priority,
         )
         self._message_count += 1
-        
+
         if self._using_redis and self._redis_client:
             try:
                 stream_key = f"prometheus:stream:{topic}"
@@ -165,7 +190,7 @@ class EVOBusAdapter:
                 self._error_count += 1
                 logger.warning(f"Redis publish failed, falling back: {e}")
                 self._dead_letters.append(msg)
-        
+
         # In-memory fallback
         self._memory_bus.publish(topic, msg)
         return msg.id
@@ -177,16 +202,20 @@ class EVOBusAdapter:
                 stream_key = f"prometheus:stream:{topic}"
                 consumer_group = group or f"cg_{self._agent_id}"
                 consumer_name = f"c_{self._agent_id}"
-                
+
                 # Try to create consumer group
                 try:
                     self._redis_client.xgroup_create(stream_key, consumer_group, id="0", mkstream=True)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Consumer group already exists: {e}")
                     pass
-                
+
                 results = self._redis_client.xreadgroup(
-                    consumer_group, consumer_name,
-                    {stream_key: ">"}, count=count, block=1000,
+                    consumer_group,
+                    consumer_name,
+                    {stream_key: ">"},
+                    count=count,
+                    block=1000,
                 )
                 messages = []
                 if results:
@@ -197,7 +226,7 @@ class EVOBusAdapter:
             except Exception as e:
                 self._error_count += 1
                 logger.warning(f"Redis consume failed: {e}")
-        
+
         return self._memory_bus.consume(topic, count)
 
     def register_agent(self, agent_info: AgentInfo) -> None:
@@ -205,17 +234,22 @@ class EVOBusAdapter:
         with self._lock:
             self._agents[agent_info.id] = agent_info
         logger.info(f"Agent registered: {agent_info.name} ({agent_info.role})")
-        
+
         if self._using_redis and self._redis_client:
             try:
                 key = f"prometheus:agents:{agent_info.id}"
-                self._redis_client.hset(key, mapping={
-                    "name": agent_info.name, "role": agent_info.role,
-                    "model": agent_info.model, "status": agent_info.status,
-                    "capabilities": json.dumps(agent_info.capabilities),
-                    "channels": json.dumps(agent_info.channels),
-                    "last_heartbeat": str(time.time()),
-                })
+                self._redis_client.hset(
+                    key,
+                    mapping={
+                        "name": agent_info.name,
+                        "role": agent_info.role,
+                        "model": agent_info.model,
+                        "status": agent_info.status,
+                        "capabilities": json.dumps(agent_info.capabilities),
+                        "channels": json.dumps(agent_info.channels),
+                        "last_heartbeat": str(time.time()),
+                    },
+                )
             except Exception as e:
                 logger.warning(f"Redis agent registration failed: {e}")
 
@@ -226,8 +260,8 @@ class EVOBusAdapter:
         if self._using_redis and self._redis_client:
             try:
                 self._redis_client.delete(f"prometheus:agents:{agent_id}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Redis agent deregistration failed: {e}")
 
     def get_agents(self, status: str = "") -> list[AgentInfo]:
         """Get registered agents, optionally filtered by status."""
@@ -296,8 +330,8 @@ class EVOBusAdapter:
         if self._redis_client:
             try:
                 self._redis_client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Redis close error: {e}")
 
     @property
     def stats(self) -> dict[str, Any]:

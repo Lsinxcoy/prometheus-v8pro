@@ -1,7 +1,8 @@
 """Synonym Dictionary - 38 AI/ML synonym groups for query expansion."""
+
 from __future__ import annotations
+
 import re
-from typing import Optional
 
 # 38 synonym groups covering AI/ML/agent domains
 SYNONYM_GROUPS: list[list[str]] = [
@@ -48,37 +49,50 @@ SYNONYM_GROUPS: list[list[str]] = [
 
 class SynonymDictionary:
     """Bidirectional synonym lookup for query expansion."""
-    
+
     def __init__(self, groups: list[list[str]] | None = None) -> None:
         self._word_to_group: dict[str, int] = {}
         self._groups: list[set[str]] = []
         groups = groups or SYNONYM_GROUPS
-        for i, group in enumerate(groups):
+        for group in groups:
             group_set = set(w.lower() for w in group)
-            self._groups.append(group_set)
+            # Check if any word already belongs to a group
+            existing_gid = None
             for word in group_set:
-                self._word_to_group[word] = i
-    
+                if word in self._word_to_group:
+                    existing_gid = self._word_to_group[word]
+                    break
+            if existing_gid is not None:
+                # Merge into existing group
+                self._groups[existing_gid] = self._groups[existing_gid] | group_set
+                for word in group_set:
+                    self._word_to_group[word] = existing_gid
+            else:
+                gid = len(self._groups)
+                self._groups.append(group_set)
+                for word in group_set:
+                    self._word_to_group[word] = gid
+
     def expand(self, query: str) -> list[str]:
         """Expand query with synonyms. Returns list of expanded queries."""
-        words = re.findall(r'\w+', query.lower())
+        words = re.findall(r"\w+", query.lower())
         expansions = set()
         for word in words:
             gid = self._word_to_group.get(word)
             if gid is not None:
                 synonyms = self._groups[gid] - {word}
                 for syn in list(synonyms)[:3]:
-                    new_query = re.sub(r'\b' + re.escape(word) + r'\b', syn, query, count=1, flags=re.IGNORECASE)
+                    new_query = re.sub(r"\b" + re.escape(word) + r"\b", syn, query, count=1, flags=re.IGNORECASE)
                     expansions.add(new_query)
         return list(expansions)[:5]
-    
+
     def get_synonyms(self, word: str) -> set[str]:
         """Get all synonyms for a word."""
         gid = self._word_to_group.get(word.lower())
         if gid is None:
             return set()
         return self._groups[gid] - {word.lower()}
-    
+
     def are_synonyms(self, word1: str, word2: str) -> bool:
         """Check if two words are synonyms."""
         gid1 = self._word_to_group.get(word1.lower())

@@ -8,12 +8,15 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
+
+from prometheus_v8.communication.bus import Event as BusEvent
+
+# Re-export BusEvent as Event for backward compatibility with events.py consumers
+Event = BusEvent
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +44,15 @@ class EventType(str, Enum):
     BROADCAST_APPROVED = "broadcast_approved"
 
 
-@dataclass
-class Event:
-    """Typed event with payload and metadata."""
-    type: EventType
-    payload: dict[str, Any] = field(default_factory=dict)
-    source: str = ""
-    timestamp: float = field(default_factory=time.time)
-    agent_id: Optional[str] = None
-
-
 class EventBus:
-    """Thread-safe pub/sub event bus with history and handlers."""
+    """Thread-safe pub/sub event bus with history and handlers.
+
+    Uses the unified Event from bus.py. EventType values are stored
+    in event.event_type as strings.
+    """
 
     def __init__(self, max_history: int = 10000) -> None:
-        self._subscribers: dict[EventType, list[Callable[[Event], None]]] = defaultdict(list)
+        self._subscribers: dict[str, list[Callable[[Event], None]]] = defaultdict(list)
         self._history: list[Event] = []
         self._lock = threading.RLock()
         self._max_history = max_history
@@ -64,21 +61,21 @@ class EventBus:
 
     def subscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
         with self._lock:
-            self._subscribers[event_type].append(handler)
+            self._subscribers[event_type.value].append(handler)
 
     def unsubscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
         with self._lock:
-            handlers = self._subscribers.get(event_type, [])
-            self._subscribers[event_type] = [h for h in handlers if h != handler]
+            handlers = self._subscribers.get(event_type.value, [])
+            self._subscribers[event_type.value] = [h for h in handlers if h != handler]
 
     def emit(self, event: Event) -> None:
         with self._lock:
             self._history.append(event)
             if len(self._history) > self._max_history:
-                self._history = self._history[-self._max_history:]
-            self._event_counts[event.type.value] += 1
+                self._history = self._history[-self._max_history :]
+            self._event_counts[event.event_type] += 1
 
-        handlers = self._subscribers.get(event.type, []) + self._subscribers.get(EventType.NODE_CREATED, [])
+        handlers = self._subscribers.get(event.event_type, [])
         for handler in handlers:
             try:
                 handler(event)
@@ -98,7 +95,7 @@ class EventBus:
         with self._lock:
             events = self._history
             if event_type:
-                events = [e for e in events if e.type == event_type]
+                events = [e for e in events if e.event_type == event_type.value]
             return events[-limit:]
 
     def get_metrics(self) -> dict[str, int]:
@@ -122,12 +119,16 @@ class ConsolidationTrigger(EventHandler):
         self._callback = callback
 
     def handle(self, event: Event) -> None:
-        if event.type in (EventType.NODE_CREATED, EventType.NODE_UPDATED, EventType.NODE_ACCESSED):
+        if event.event_type in (
+            EventType.NODE_CREATED.value,
+            EventType.NODE_UPDATED.value,
+            EventType.NODE_ACCESSED.value,
+        ):
             self._count += 1
             if self._count >= self._threshold:
                 self._count = 0
                 consolidation_event = Event(
-                    type=EventType.CONSOLIDATION_TRIGGERED,
+                    event_type=EventType.CONSOLIDATION_TRIGGERED.value,
                     payload={"triggered_by": "threshold", "count": self._threshold},
                 )
                 if self._callback:
@@ -140,17 +141,24 @@ class EventLogger(EventHandler):
     def __init__(self, log_path: str = "data/events.jsonl") -> None:
         self._path = Path(log_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._logger = logging.getLogger("prometheus_v8.events.jsonl")
 
     def handle(self, event: Event) -> None:
         try:
-            with open(self._path, "a") as f:
-                f.write(json.dumps({
-                    "type": event.type.value,
+            record = json.dumps(
+                {
+                    "type": event.event_type,
                     "payload": event.payload,
                     "source": event.source,
                     "timestamp": event.timestamp,
-                    "agent_id": event.agent_id,
-                }) + "\n")
+                    "agent_id": event.correlation_id,
+                }
+            )
+            # Use logging instead of direct file I/O for thread safety
+            self._logger.info(record)
+            # Also write to JSONL file for persistence
+            with open(self._path, "a") as f:
+                f.write(record + "\n")
         except Exception as e:
             logger.warning(f"EventLogger write error: {e}")
 
@@ -162,8 +170,8 @@ class MetricsCollector(EventHandler):
         self._by_agent: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     def handle(self, event: Event) -> None:
-        agent = event.agent_id or "system"
-        self._by_agent[agent][event.type.value] += 1
+        agent = event.correlation_id or "system"
+        self._by_agent[agent][event.event_type] += 1
 
     def get_agent_metrics(self, agent_id: str) -> dict[str, int]:
         return dict(self._by_agent.get(agent_id, {}))

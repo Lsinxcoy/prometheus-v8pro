@@ -1,23 +1,26 @@
 """MCP Server - Model Context Protocol server with 16 tools."""
+
 from __future__ import annotations
+
 import json
 import logging
-import time
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
+    from mcp.types import TextContent, Tool
+
     HAS_MCP = True
 except ImportError:
     HAS_MCP = False
 
+
 class PrometheusMCPServer:
     """MCP server exposing Prometheus V8 tools.
-    
+
     16 tools:
     1. add_node - Add a knowledge node
     2. get_node - Get a node by ID
@@ -37,8 +40,7 @@ class PrometheusMCPServer:
     16. get_dashboard - Get dashboard overview
     """
 
-    def __init__(self, store=None, engine=None, safety=None, monitor=None,
-                 governance=None, lifecycle=None) -> None:
+    def __init__(self, store=None, engine=None, safety=None, monitor=None, governance=None, lifecycle=None) -> None:
         self._store = store
         self._engine = engine
         self._safety = safety
@@ -50,101 +52,189 @@ class PrometheusMCPServer:
     def get_tool_definitions(self) -> list[dict]:
         """Return MCP tool definitions."""
         return [
-            {"name": "add_node", "description": "Add a knowledge node to memory",
-             "inputSchema": {"type": "object", "properties": {
-                 "content": {"type": "string"}, "node_type": {"type": "string", "default": "fact"},
-                 "importance": {"type": "number", "default": 0.5},
-                 "tags": {"type": "array", "items": {"type": "string"}, "default": []},
-             }, "required": ["content"]}},
-            {"name": "get_node", "description": "Get a node by ID",
-             "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-            {"name": "search_nodes", "description": "Search nodes by query",
-             "inputSchema": {"type": "object", "properties": {
-                 "query": {"type": "string"}, "limit": {"type": "integer", "default": 10},
-             }, "required": ["query"]}},
-            {"name": "delete_node", "description": "Delete a node by ID",
-             "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-            {"name": "add_edge", "description": "Add a knowledge graph edge",
-             "inputSchema": {"type": "object", "properties": {
-                 "source_id": {"type": "string"}, "target_id": {"type": "string"},
-                 "edge_type": {"type": "string", "default": "related"},
-                 "weight": {"type": "number", "default": 1.0},
-             }, "required": ["source_id", "target_id"]}},
-            {"name": "get_edges", "description": "Get edges for a node",
-             "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-            {"name": "evolve", "description": "Run evolution on a genome",
-             "inputSchema": {"type": "object", "properties": {
-                 "code": {"type": "string"}, "generations": {"type": "integer", "default": 5},
-             }, "required": ["code"]}},
-            {"name": "evolution_status", "description": "Get evolution engine status",
-             "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "safety_check", "description": "Check if an action is safe",
-             "inputSchema": {"type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"]}},
-            {"name": "consolidate", "description": "Run memory consolidation",
-             "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 100}}}},
-            {"name": "dream", "description": "Run a dream cycle",
-             "inputSchema": {"type": "object", "properties": {"topic": {"type": "string", "default": ""}}}},
-            {"name": "daily_learn", "description": "Run a daily learning cycle",
-             "inputSchema": {"type": "object", "properties": {
-                 "topic": {"type": "string"}, "content": {"type": "string"},
-             }, "required": ["topic", "content"]}},
-            {"name": "assess_moat", "description": "Assess memory moat strength",
-             "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "get_kpi", "description": "Get KPI metrics",
-             "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "get_health", "description": "Get system health status",
-             "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "get_dashboard", "description": "Get dashboard overview data",
-             "inputSchema": {"type": "object", "properties": {}}},
+            {
+                "name": "add_node",
+                "description": "Add a knowledge node to memory",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "node_type": {"type": "string", "default": "fact"},
+                        "importance": {"type": "number", "default": 0.5},
+                        "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+                    },
+                    "required": ["content"],
+                },
+            },
+            {
+                "name": "get_node",
+                "description": "Get a node by ID",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"node_id": {"type": "string"}},
+                    "required": ["node_id"],
+                },
+            },
+            {
+                "name": "search_nodes",
+                "description": "Search nodes by query",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "delete_node",
+                "description": "Delete a node by ID",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"node_id": {"type": "string"}},
+                    "required": ["node_id"],
+                },
+            },
+            {
+                "name": "add_edge",
+                "description": "Add a knowledge graph edge",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source_id": {"type": "string"},
+                        "target_id": {"type": "string"},
+                        "edge_type": {"type": "string", "default": "related"},
+                        "weight": {"type": "number", "default": 1.0},
+                    },
+                    "required": ["source_id", "target_id"],
+                },
+            },
+            {
+                "name": "get_edges",
+                "description": "Get edges for a node",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"node_id": {"type": "string"}},
+                    "required": ["node_id"],
+                },
+            },
+            {
+                "name": "evolve",
+                "description": "Run evolution on a genome",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string"},
+                        "generations": {"type": "integer", "default": 5},
+                    },
+                    "required": ["code"],
+                },
+            },
+            {
+                "name": "evolution_status",
+                "description": "Get evolution engine status",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "safety_check",
+                "description": "Check if an action is safe",
+                "inputSchema": {"type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"]},
+            },
+            {
+                "name": "consolidate",
+                "description": "Run memory consolidation",
+                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 100}}},
+            },
+            {
+                "name": "dream",
+                "description": "Run a dream cycle",
+                "inputSchema": {"type": "object", "properties": {"topic": {"type": "string", "default": ""}}},
+            },
+            {
+                "name": "daily_learn",
+                "description": "Run a daily learning cycle",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["topic", "content"],
+                },
+            },
+            {
+                "name": "assess_moat",
+                "description": "Assess memory moat strength",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {"name": "get_kpi", "description": "Get KPI metrics", "inputSchema": {"type": "object", "properties": {}}},
+            {
+                "name": "get_health",
+                "description": "Get system health status",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "get_dashboard",
+                "description": "Get dashboard overview data",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
         ]
 
     async def handle_tool_call(self, name: str, arguments: dict[str, Any]) -> str:
         """Handle a tool call and return the result as text."""
+        import asyncio
+
         self._tool_count += 1
-        
-        try:
-            if name == "add_node":
-                return self._tool_add_node(arguments)
-            elif name == "get_node":
-                return self._tool_get_node(arguments)
-            elif name == "search_nodes":
-                return self._tool_search_nodes(arguments)
-            elif name == "delete_node":
-                return self._tool_delete_node(arguments)
-            elif name == "add_edge":
-                return self._tool_add_edge(arguments)
-            elif name == "get_edges":
-                return self._tool_get_edges(arguments)
-            elif name == "evolve":
-                return self._tool_evolve(arguments)
-            elif name == "evolution_status":
-                return self._tool_evolution_status()
-            elif name == "safety_check":
-                return self._tool_safety_check(arguments)
-            elif name == "consolidate":
-                return self._tool_consolidate(arguments)
-            elif name == "dream":
-                return self._tool_dream(arguments)
-            elif name == "daily_learn":
-                return self._tool_daily_learn(arguments)
-            elif name == "assess_moat":
-                return self._tool_assess_moat()
-            elif name == "get_kpi":
-                return self._tool_get_kpi()
-            elif name == "get_health":
-                return self._tool_get_health()
-            elif name == "get_dashboard":
-                return self._tool_get_dashboard()
-            else:
-                return f"Unknown tool: {name}"
-        except Exception as e:
-            logger.error(f"Tool {name} error: {e}")
-            return f"Error: {str(e)}"
+
+        def _dispatch() -> str:
+            try:
+                if name == "add_node":
+                    return self._tool_add_node(arguments)
+                elif name == "get_node":
+                    return self._tool_get_node(arguments)
+                elif name == "search_nodes":
+                    return self._tool_search_nodes(arguments)
+                elif name == "delete_node":
+                    return self._tool_delete_node(arguments)
+                elif name == "add_edge":
+                    return self._tool_add_edge(arguments)
+                elif name == "get_edges":
+                    return self._tool_get_edges(arguments)
+                elif name == "evolve":
+                    return self._tool_evolve(arguments)
+                elif name == "evolution_status":
+                    return self._tool_evolution_status()
+                elif name == "safety_check":
+                    return self._tool_safety_check(arguments)
+                elif name == "consolidate":
+                    return self._tool_consolidate(arguments)
+                elif name == "dream":
+                    return self._tool_dream(arguments)
+                elif name == "daily_learn":
+                    return self._tool_daily_learn(arguments)
+                elif name == "assess_moat":
+                    return self._tool_assess_moat()
+                elif name == "get_kpi":
+                    return self._tool_get_kpi()
+                elif name == "get_health":
+                    return self._tool_get_health()
+                elif name == "get_dashboard":
+                    return self._tool_get_dashboard()
+                else:
+                    return f"Unknown tool: {name}"
+            except Exception as e:
+                logger.error(f"Tool {name} error: {e}")
+                return f"Error: {str(e)}"
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _dispatch)
 
     def _tool_add_node(self, args: dict) -> str:
         if not self._store:
             return "Error: Store not available"
-        from prometheus_v8.schema import create_fact_node, create_insight_node, create_episode_node
+        from prometheus_v8.schema import create_episode_node, create_fact_node, create_insight_node
+
         creators = {"fact": create_fact_node, "insight": create_insight_node, "episode": create_episode_node}
         creator = creators.get(args.get("node_type", "fact"), create_fact_node)
         node = creator(content=args["content"], importance=args.get("importance", 0.5), tags=args.get("tags", []))
@@ -158,8 +248,15 @@ class PrometheusMCPServer:
         node = self._store.get_node(nid)
         if not node:
             return "Node not found"
-        return json.dumps({"id": node.id.hex(), "type": node.type.value, "content": node.payload.content,
-                          "importance": node.importance, "layer": node.layer.value})
+        return json.dumps(
+            {
+                "id": node.id.hex(),
+                "type": node.type.value,
+                "content": node.payload.content,
+                "importance": node.importance,
+                "layer": node.layer.value,
+            }
+        )
 
     def _tool_search_nodes(self, args: dict) -> str:
         if not self._store:
@@ -180,10 +277,14 @@ class PrometheusMCPServer:
         if not self._store:
             return "Error: Store not available"
         from prometheus_v8.schema import Edge, EdgeType, generate_uuidv7
-        edge = Edge(id=generate_uuidv7(), source_id=bytes.fromhex(args["source_id"]),
-                    target_id=bytes.fromhex(args["target_id"]),
-                    type=EdgeType(args.get("edge_type", "related")),
-                    weight=args.get("weight", 1.0))
+
+        edge = Edge(
+            id=generate_uuidv7(),
+            source_id=bytes.fromhex(args["source_id"]),
+            target_id=bytes.fromhex(args["target_id"]),
+            type=EdgeType(args.get("edge_type", "related")),
+            weight=args.get("weight", 1.0),
+        )
         self._store.add_edge(edge)
         return f"Edge added: {edge.id.hex()}"
 
@@ -192,14 +293,23 @@ class PrometheusMCPServer:
             return "Error: Store not available"
         nid = bytes.fromhex(args["node_id"])
         edges = self._store.get_edges(nid)
-        results = [{"id": e.id.hex(), "source": e.source_id.hex(), "target": e.target_id.hex(),
-                    "type": e.type.value, "weight": e.weight} for e in edges]
+        results = [
+            {
+                "id": e.id.hex(),
+                "source": e.source_id.hex(),
+                "target": e.target_id.hex(),
+                "type": e.type.value,
+                "weight": e.weight,
+            }
+            for e in edges
+        ]
         return json.dumps(results)
 
     def _tool_evolve(self, args: dict) -> str:
         if not self._engine:
             return "Error: Engine not available"
         from prometheus_v8.schema import Genome
+
         genome = Genome(code=args["code"], fitness=0.3)
         result = self._engine.evolve(genome, max_generations=args.get("generations", 5))
         if result:
@@ -219,24 +329,44 @@ class PrometheusMCPServer:
         return json.dumps({"allowed": verdict.allowed, "reason": verdict.reason, "risk_level": verdict.risk_level})
 
     def _tool_consolidate(self, args: dict) -> str:
-        if not self._lifecycle:
-            return "Error: Lifecycle not available"
-        return "Consolidation completed"
+        if not self._store:
+            return "Error: Store not available"
+        from prometheus_v8.lifecycle.consolidation import ConsolidationPipeline
+        from prometheus_v8.schema import MemoryLayer
+
+        nodes = self._store.get_nodes_by_layer(MemoryLayer.WORKING, limit=args.get("limit", 100))
+        pipeline = ConsolidationPipeline(store=self._store)
+        results = pipeline.consolidate(nodes)
+        return json.dumps({"consolidated": len(results), "input": len(nodes)})
 
     def _tool_dream(self, args: dict) -> str:
-        if not self._lifecycle:
-            return "Error: Lifecycle not available"
-        return "Dream cycle completed"
+        if not self._store:
+            return "Error: Store not available"
+        from prometheus_v8.lifecycle.dream import DreamCycle
+
+        cycle = DreamCycle(store=self._store)
+        insights = cycle.dream()
+        return json.dumps({"insights": len(insights), "dream_cycles": cycle.stats["dream_cycles"]})
 
     def _tool_daily_learn(self, args: dict) -> str:
         if not self._lifecycle:
             return "Error: Lifecycle not available"
-        return "Daily learning cycle completed"
+        from prometheus_v8.lifecycle.daily_learning import DailyLearningCycle
+
+        cycle = DailyLearningCycle()
+        topic = args.get("topic", "")
+        content = args.get("content", "")
+        result = cycle.run_cycle(topic=topic, content=content)
+        return json.dumps({"result": str(result.derived) if result else "completed"})
 
     def _tool_assess_moat(self) -> str:
-        if not self._lifecycle:
-            return "Error: Lifecycle not available"
-        return json.dumps({"moat_score": 0})
+        if not self._store:
+            return json.dumps({"moat_score": 0})
+        from prometheus_v8.lifecycle.moat import MemoryMoat
+
+        moat = MemoryMoat(store=self._store)
+        assessment = moat.assess()
+        return json.dumps({"moat_score": assessment.composite_score if hasattr(assessment, "composite_score") else 0})
 
     def _tool_get_kpi(self) -> str:
         if not self._monitor:
@@ -256,6 +386,7 @@ class PrometheusMCPServer:
 
     def _tool_get_dashboard(self) -> str:
         from prometheus_v8.visualization.dashboard import DashboardProvider
+
         dp = DashboardProvider(store=self._store, engine=self._engine, safety=self._safety)
         return json.dumps(dp.get_overview())
 
@@ -264,19 +395,21 @@ class PrometheusMCPServer:
         if not HAS_MCP:
             logger.warning("MCP library not available")
             return
-        
+
         server = Server("prometheus-v8")
-        
+
         @server.list_tools()
         async def list_tools():
-            return [Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"])
-                    for t in self.get_tool_definitions()]
-        
+            return [
+                Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"])
+                for t in self.get_tool_definitions()
+            ]
+
         @server.call_tool()
         async def call_tool(name: str, arguments: dict):
             result = await self.handle_tool_call(name, arguments)
             return [TextContent(type="text", text=result)]
-        
+
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
 

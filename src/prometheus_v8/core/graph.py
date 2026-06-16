@@ -1,15 +1,31 @@
 """Graph Store - 3 backends: NetworkX/KuzuDB/FalkorDB."""
 
 from __future__ import annotations
+
 import logging
 import pickle
 import threading
 from abc import ABC, abstractmethod
-from collections import defaultdict, deque
-from typing import Any, Optional
+from collections import deque
+from typing import Any, Protocol, runtime_checkable
+
 from prometheus_v8.schema import EdgeType
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class GraphProtocol(Protocol):
+    """Protocol defining the graph store interface for type-safe dependency injection."""
+
+    def add_node(self, node_id: str, attributes: dict | None = None) -> None: ...
+    def add_edge(
+        self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None
+    ) -> None: ...
+    def get_neighbors(self, node_id: str, edge_type: str | None = None) -> list[str]: ...
+    def get_node_attrs(self, node_id: str) -> dict[str, Any]: ...
+    def remove_node(self, node_id: str) -> None: ...
+    def shortest_path(self, source: str, target: str) -> list[str] | None: ...
 
 
 class GraphBackend(ABC):
@@ -19,10 +35,14 @@ class GraphBackend(ABC):
     def add_node(self, node_id: str, attributes: dict | None = None) -> None: ...
 
     @abstractmethod
-    def add_edge(self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None) -> None: ...
+    def add_edge(
+        self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None
+    ) -> None: ...
 
     @abstractmethod
-    def get_neighbors(self, node_id: str, edge_type: str | None = None, direction: str = "outgoing") -> list[tuple[str, str, float]]: ...
+    def get_neighbors(
+        self, node_id: str, edge_type: str | None = None, direction: str = "outgoing"
+    ) -> list[tuple[str, str, float]]: ...
 
     @abstractmethod
     def find_paths(self, source: str, target: str, max_depth: int = 5) -> list[list[str]]: ...
@@ -40,6 +60,7 @@ class NetworkXGraphBackend(GraphBackend):
     def __init__(self) -> None:
         try:
             import networkx as nx
+
             self._nx = nx
             self._graph = nx.MultiDiGraph()
         except ImportError:
@@ -50,11 +71,15 @@ class NetworkXGraphBackend(GraphBackend):
         with self._lock:
             self._graph.add_node(node_id, **(attributes or {}))
 
-    def add_edge(self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None) -> None:
+    def add_edge(
+        self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None
+    ) -> None:
         with self._lock:
             self._graph.add_edge(source, target, key=edge_type, weight=weight, **(metadata or {}))
 
-    def get_neighbors(self, node_id: str, edge_type: str | None = None, direction: str = "outgoing") -> list[tuple[str, str, float]]:
+    def get_neighbors(
+        self, node_id: str, edge_type: str | None = None, direction: str = "outgoing"
+    ) -> list[tuple[str, str, float]]:
         with self._lock:
             results = []
             if direction in ("outgoing", "both"):
@@ -82,13 +107,15 @@ class NetworkXGraphBackend(GraphBackend):
                 return {}
             try:
                 from networkx.algorithms.community import greedy_modularity_communities
+
                 communities = greedy_modularity_communities(undirected)
                 result = {}
                 for i, comm in enumerate(communities):
                     for node in comm:
                         result[node] = i
                 return result
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Community detection failed: {e}")
                 return {n: 0 for n in undirected.nodes}
 
     def hallway_traversal(self, start: str, max_depth: int = 3) -> list[tuple[str, float]]:
@@ -121,6 +148,7 @@ class NetworkXGraphBackend(GraphBackend):
 
     def load(self, path: str) -> None:
         import os
+
         if os.path.exists(path):
             with open(path, "rb") as f:
                 self._graph = pickle.load(f)
@@ -131,6 +159,7 @@ class SQLGraphBackend(GraphBackend):
 
     def __init__(self, db_path: str = "data/graph.db") -> None:
         import sqlite3
+
         self._conn = sqlite3.connect(db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("""
@@ -143,33 +172,53 @@ class SQLGraphBackend(GraphBackend):
 
     def add_node(self, node_id: str, attributes: dict | None = None) -> None:
         import json
+
         with self._lock:
-            self._conn.execute("INSERT OR REPLACE INTO graph_nodes VALUES(?,?)", (node_id, json.dumps(attributes or {})))
+            self._conn.execute(
+                "INSERT OR REPLACE INTO graph_nodes VALUES(?,?)", (node_id, json.dumps(attributes or {}))
+            )
             self._conn.commit()
 
-    def add_edge(self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None) -> None:
+    def add_edge(
+        self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: dict | None = None
+    ) -> None:
         import json
+
         with self._lock:
-            self._conn.execute("INSERT OR REPLACE INTO graph_edges VALUES(?,?,?,?,?)", (source, target, edge_type, weight, json.dumps(metadata or {})))
+            self._conn.execute(
+                "INSERT OR REPLACE INTO graph_edges VALUES(?,?,?,?,?)",
+                (source, target, edge_type, weight, json.dumps(metadata or {})),
+            )
             self._conn.commit()
 
-    def get_neighbors(self, node_id: str, edge_type: str | None = None, direction: str = "outgoing") -> list[tuple[str, str, float]]:
+    def get_neighbors(
+        self, node_id: str, edge_type: str | None = None, direction: str = "outgoing"
+    ) -> list[tuple[str, str, float]]:
         with self._lock:
             if direction == "outgoing":
                 if edge_type:
-                    rows = self._conn.execute("SELECT target, type, weight FROM graph_edges WHERE source=? AND type=?", (node_id, edge_type)).fetchall()
+                    rows = self._conn.execute(
+                        "SELECT target, type, weight FROM graph_edges WHERE source=? AND type=?", (node_id, edge_type)
+                    ).fetchall()
                 else:
-                    rows = self._conn.execute("SELECT target, type, weight FROM graph_edges WHERE source=?", (node_id,)).fetchall()
+                    rows = self._conn.execute(
+                        "SELECT target, type, weight FROM graph_edges WHERE source=?", (node_id,)
+                    ).fetchall()
             else:
                 if edge_type:
-                    rows = self._conn.execute("SELECT source, type, weight FROM graph_edges WHERE target=? AND type=?", (node_id, edge_type)).fetchall()
+                    rows = self._conn.execute(
+                        "SELECT source, type, weight FROM graph_edges WHERE target=? AND type=?", (node_id, edge_type)
+                    ).fetchall()
                 else:
-                    rows = self._conn.execute("SELECT source, type, weight FROM graph_edges WHERE target=?", (node_id,)).fetchall()
+                    rows = self._conn.execute(
+                        "SELECT source, type, weight FROM graph_edges WHERE target=?", (node_id,)
+                    ).fetchall()
             return [(r[0], r[1], r[2]) for r in rows]
 
     def find_paths(self, source: str, target: str, max_depth: int = 5) -> list[list[str]]:
         with self._lock:
-            rows = self._conn.execute("""
+            rows = self._conn.execute(
+                """
             WITH RECURSIVE paths(path, last_node, depth) AS (
                 SELECT '|' || ?, ?, 0
                 UNION ALL
@@ -178,7 +227,9 @@ class SQLGraphBackend(GraphBackend):
                 WHERE p.depth < ? AND p.path NOT LIKE '%|' || e.target || '|%'
             )
             SELECT path FROM paths WHERE last_node = ? AND depth > 0 LIMIT 10
-            """, (source, source, max_depth, target)).fetchall()
+            """,
+                (source, source, max_depth, target),
+            ).fetchall()
             return [r[0].strip("|").split("|") for r in rows if r[0]]
 
     def community_detection(self) -> dict[str, int]:

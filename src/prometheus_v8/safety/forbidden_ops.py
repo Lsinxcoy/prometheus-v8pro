@@ -1,9 +1,9 @@
 """Forbidden Operations - 20 forbidden patterns in 5 categories."""
+
 from __future__ import annotations
+
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,10 @@ FORBIDDEN_PATTERNS = {
     ],
 }
 
+
 class ForbiddenOpsChecker:
     """Check content against 20 forbidden operation patterns in 5 categories."""
-    
+
     def __init__(self, custom_patterns: dict[str, list[str]] | None = None) -> None:
         self._patterns = FORBIDDEN_PATTERNS.copy()
         if custom_patterns:
@@ -52,7 +53,7 @@ class ForbiddenOpsChecker:
         self._compiled: dict[str, list[re.Pattern]] = {}
         for category, patterns in self._patterns.items():
             self._compiled[category] = [re.compile(p, re.IGNORECASE) for p in patterns]
-    
+
     def check(self, content: str) -> list[str]:
         """Check content for forbidden operations. Returns list of violations."""
         violations = []
@@ -62,13 +63,13 @@ class ForbiddenOpsChecker:
                 if match:
                     violations.append(f"{category}: matched '{match.group()}' with pattern '{pattern.pattern}'")
         return violations
-    
+
     def is_safe(self, content: str) -> bool:
         return len(self.check(content)) == 0
-    
+
     def add_pattern(self, category: str, pattern: str) -> None:
         self._patterns.setdefault(category, []).append(pattern)
         self._compiled.setdefault(category, []).append(re.compile(pattern, re.IGNORECASE))
-    
+
     def list_categories(self) -> dict[str, int]:
         return {cat: len(pats) for cat, pats in self._patterns.items()}
