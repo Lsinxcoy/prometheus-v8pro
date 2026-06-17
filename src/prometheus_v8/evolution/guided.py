@@ -54,9 +54,12 @@ class GuidedEvolution:
         return genome, result_info
 
     def _apply_goal_mutation(self, genome: Genome, goal: Goal) -> Genome:
-        """Apply mutations directed toward the goal."""
-        import random
+        """Apply mutations directed toward the goal.
 
+        Does NOT add random fitness adjustments — fitness should only come from
+        actual evaluation (ThreeStageFitness), not from random boosts.
+        The mutation itself may change fitness when evaluated.
+        """
         from prometheus_v8.organs.darwin import ASTMutator
 
         if genome.code:
@@ -64,9 +67,9 @@ class GuidedEvolution:
             mutated_code, mtype = mutator.mutate(genome.code)
             if mutated_code != genome.code:
                 genome.code = mutated_code
-                # Small fitness boost toward goal
-                genome.fitness += random.uniform(-0.05, 0.1)
-                genome.fitness = max(0.0, min(1.0, genome.fitness))
+                # Do NOT add random fitness adjustment here.
+                # Fitness will be properly evaluated by ThreeStageFitness.evaluate()
+                # which runs static analysis + dynamic validation + LLM judge.
 
         return genome
 

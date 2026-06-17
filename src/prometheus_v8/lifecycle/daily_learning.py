@@ -93,7 +93,9 @@ class DailyLearningCycle:
                 return resp[:500]
             except Exception as e:
                 logger.warning(f"Learn step failed: {e}")
-        return content[:300]
+
+        # Rule-based: extract key sentences from content
+        return self._extract_key_points(topic, content)
 
     def _reflect(self, learned: str) -> str:
         """Step 2: Reflect on what was learned."""
@@ -104,7 +106,9 @@ class DailyLearningCycle:
                 return resp[:300]
             except Exception as e:
                 logger.warning(f"Reflect step failed: {e}")
-        return "Reflection: verify accuracy and completeness"
+
+        # Rule-based: structured reflection checklist
+        return self._rule_based_reflect(learned)
 
     def _reason(self, learned: str, reflected: str) -> str:
         """Step 3: Reason about implications."""
@@ -115,7 +119,9 @@ class DailyLearningCycle:
                 return resp[:300]
             except Exception as e:
                 logger.warning(f"Reason step failed: {e}")
-        return "Reasoning: apply logical deduction"
+
+        # Rule-based: identify implications from learned+reflected
+        return self._rule_based_reason(learned, reflected)
 
     def _derive(self, reasoned: str) -> str:
         """Step 4: Derive actionable principles."""
@@ -128,7 +134,9 @@ class DailyLearningCycle:
                 return resp[:200]
             except Exception as e:
                 logger.warning(f"Derive step failed: {e}")
-        return "Principle: apply insight from reasoning"
+
+        # Rule-based: derive principle from reasoning keywords
+        return self._rule_based_derive(reasoned)
 
     def _apply(self, derived: str) -> str:
         """Step 5: Apply to current context."""
@@ -148,6 +156,89 @@ class DailyLearningCycle:
                 logger.warning(f"Apply step failed: {e}")
                 return f"Application queued: {derived[:100]}"
         return f"Application queued: {derived[:100]}"
+
+    # --- Rule-based fallback methods ---
+
+    def _extract_key_points(self, topic: str, content: str) -> str:
+        """Extract key sentences from content using heuristic rules."""
+        if not content:
+            return f"Topic: {topic} (no content available)"
+
+        sentences = [s.strip() for s in content.replace("。", ".").replace("！", "!").replace("？", "?").split(".") if s.strip()]
+        if not sentences:
+            return content[:300]
+
+        # Prioritize sentences that contain topic keywords or are definition-like
+        topic_words = set(topic.lower().split())
+        scored = []
+        for s in sentences[:20]:  # Limit processing
+            score = 0
+            s_lower = s.lower()
+            for w in topic_words:
+                if w in s_lower:
+                    score += 2
+            if any(kw in s_lower for kw in ["is", "are", "means", "defines", "是", "即", "指"]):
+                score += 1
+            if len(s) > 20:  # Prefer substantial sentences
+                score += 1
+            scored.append((score, s))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [s for _, s in scored[:5]]
+        return ". ".join(top)[:500]
+
+    def _rule_based_reflect(self, learned: str) -> str:
+        """Structured reflection when LLM is unavailable."""
+        concerns = []
+        if len(learned) < 50:
+            concerns.append("Knowledge appears incomplete (very short)")
+        if not any(kw in learned.lower() for kw in ["because", "since", "due to", "因为", "由于"]):
+            concerns.append("Missing causal explanations")
+        if not any(kw in learned.lower() for kw in ["example", "instance", "例如", "比如"]):
+            concerns.append("No concrete examples provided")
+        if not any(kw in learned.lower() for kw in ["limitation", "constraint", "限制", "约束"]):
+            concerns.append("Limitations not discussed")
+
+        if concerns:
+            return "Reflection concerns: " + "; ".join(concerns)
+        return "Reflection: knowledge appears well-structured but should verify accuracy"
+
+    def _rule_based_reason(self, learned: str, reflected: str) -> str:
+        """Rule-based reasoning from learned and reflected content."""
+        implications = []
+
+        # Detect potential implications from reflection concerns
+        if "incomplete" in reflected.lower() or "不完整" in reflected:
+            implications.append("Additional research needed to fill knowledge gaps")
+        if "causal" in reflected.lower():
+            implications.append("Understanding root causes may reveal new optimization opportunities")
+        if "examples" in reflected.lower() or "example" in reflected.lower():
+            implications.append("Concrete examples should be gathered to validate theory")
+
+        # Detect scope from learned content
+        if any(kw in learned.lower() for kw in ["all", "every", "always", "所有", "总是"]):
+            implications.append("Universal claims need careful verification")
+
+        if implications:
+            return "Reasoning: " + "; ".join(implications)
+        return "Reasoning: apply logical deduction from available knowledge"
+
+    def _rule_based_derive(self, reasoned: str) -> str:
+        """Derive an actionable principle from reasoning."""
+        # Try to extract a When/Do pattern from reasoning
+        if "gap" in reasoned.lower() or "缺口" in reasoned:
+            return "When knowledge gaps are identified, prioritize targeted research before proceeding"
+        if "causal" in reasoned.lower() or "原因" in reasoned:
+            return "When root causes are understood, design interventions at the causal level"
+        if "verify" in reasoned.lower() or "验证" in reasoned:
+            return "When claims lack evidence, implement verification before relying on them"
+        if "optimization" in reasoned.lower() or "优化" in reasoned:
+            return "When optimization opportunities exist, measure baseline before applying changes"
+
+        # Generic principle from reasoning content
+        if len(reasoned) > 20:
+            return f"When encountering similar situations, apply: {reasoned[:80]}"
+        return "Principle: apply insight from reasoning"
 
     def _score_round(self, lr: LearningRound) -> float:
         """Score the quality of a learning round."""

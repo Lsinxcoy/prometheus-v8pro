@@ -29,9 +29,9 @@ class RoutingRule:
     def matches(self, message: Message) -> bool:
         if not self.enabled:
             return False
-        # Use Message fields with Event fallback: sender→source, channel→topic, type→event_type
-        sender = getattr(message, "sender", "") or message.source
-        channel = getattr(message, "channel", "") or message.topic
+        # Message extends Event: sender→source, channel→topic are unified via properties
+        sender = message.sender if message.sender else message.source
+        channel = message.channel if message.channel else message.topic
         msg_type = message.event_type
         if self.source_pattern and not re.match(self.source_pattern, sender):
             return False
@@ -92,23 +92,23 @@ class EventRouter:
                     # Use MemoryBus.publish() with proper signature
                     topic = rule.target_channel
                     event_type = routed_msg.event_type
-                    source = getattr(routed_msg, "sender", "") or routed_msg.source
+                    source = routed_msg.sender if routed_msg.sender else routed_msg.source
                     self._bus.publish(
                         topic=topic,
                         event_type=event_type,
                         payload=routed_msg.payload,
                         source=source,
-                        correlation_id=getattr(routed_msg, "recipient", "") or routed_msg.correlation_id,
+                        correlation_id=routed_msg.recipient if routed_msg.recipient else routed_msg.correlation_id,
                     )
                     total_reached += 1
                     self._stats["routed"] += 1
 
         # Direct delivery to registered agents
-        recipient = getattr(message, "recipient", "") or message.correlation_id
+        recipient = message.recipient if message.recipient else message.correlation_id
         if recipient:
             channels = self._agent_channels.get(recipient, [])
             for channel in channels:
-                sender = getattr(message, "sender", "") or message.source
+                sender = message.sender if message.sender else message.source
                 msg_type = message.event_type
                 self._bus.publish(
                     topic=channel, event_type=msg_type, payload=message.payload, source=sender, correlation_id=recipient

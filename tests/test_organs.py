@@ -92,7 +92,10 @@ class TestNuwaOrgan:
         ctx = OrganContext(task="simple task", inputs={})
         result = organ.execute(ctx)
         assert result.success
-        assert result.output["generations"][0]["type"] == "placeholder"
+        # Rule-based generation replaces old placeholder (type="placeholder")
+        gen_type = result.output["generations"][0]["type"]
+        assert gen_type.startswith("rule_based"), f"Expected rule_based type, got {gen_type}"
+        assert "confidence" in result.output["generations"][0]
 
     def test_code_patch_generation_task(self):
         organ = NuwaOrgan(llm=None)

@@ -3,7 +3,7 @@
 from prometheus_v8.schema import Genome
 from prometheus_v8.evolution.engine import UnifiedEvolutionEngine
 from prometheus_v8.evolution.fitness import ThreeStageFitness
-from prometheus_v8.evolution.direction_selector import DirectionSelector
+from prometheus_v8.core.direction_selector import DirectionSelector
 from prometheus_v8.evolution.anti_evolution import AntiEvolutionDetector
 from prometheus_v8.evolution.goal_system import GoalSystem, GoalState
 from prometheus_v8.evolution.reasoning_budget import ReasoningBudget

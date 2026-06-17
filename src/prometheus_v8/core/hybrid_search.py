@@ -201,11 +201,21 @@ class HybridSearchEngine:
     ) -> list[Node]:
         """InsightForge deep search: decompose → parallel search → dedup → expand → RRF + MMR.
 
-        1. Decompose complex query into sub-questions
+        1. Decompose complex query into sub-questions (requires LLM; falls back to regular search)
         2. Search each sub-question independently
         3. Deduplicate results
         4. Expand via 2-hop graph neighbors
         5. Unified RRF fusion + MMR reranking
+
+        Fallback behavior:
+        - If no LLM is available, query decomposition is skipped and this method
+          delegates to ``self.search()`` (standard 4-way hybrid search without
+          sub-query decomposition or graph expansion).
+        - If LLM decomposition fails (JSON parse error, timeout, etc.), the
+          original query is used as the sole sub-query, which effectively
+          produces the same result as ``self.search()``.
+        - Graph expansion is skipped if ``self._graph`` or ``self._store`` is None.
+        - MMR reranking is skipped if ``self._vector`` is None.
         """
         # Step 1: Decompose query
         subqueries = self._decompose_query(query)
